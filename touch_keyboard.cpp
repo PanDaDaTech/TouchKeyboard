@@ -402,9 +402,9 @@ static const wchar_t* KeyText(const KeyDef* k) {
     switch (k->vk) {
         case 0x1B: return L"Esc";
         case 0x2E: return L"Del";
-        case 0x08: return L"\x232B";
+        case 0x08: return L"←";
         case 0x09: return L"Tab";
-        case 0x0D: return L"\x23CE";
+        case 0x0D: return L"Enter";
         case 0x14: return L"Caps";
         case 0x10: case 0xA0: case 0xA1: return L"Shift";
         case 0x11: return L"Ctrl";
@@ -703,7 +703,8 @@ static void DrawKeys(HDC dc) {
             const wchar_t* txt = KeyText(k);
             HFONT f = g_f14b;
             if (k->type == K_HIDE || k->type == K_ARROW) f = g_f14b;
-            if (k->vk == 0x08 || k->vk == 0x0D) f = g_f18b;
+            if (k->vk == 0x08) f = g_f18b;
+            if (k->vk == 0x0D) f = g_f13b;
             if (k->vk == 0x20 || k->type == K_SPACE) f = g_f14b;
             DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, C_WHITE);
         }
