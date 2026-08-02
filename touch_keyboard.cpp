@@ -189,8 +189,11 @@ NOTIFYICONDATAA g_nid;
 BOOL        g_9key = FALSE;
 PopupBubble g_bubble = {0};
 
-// IME 中英文状态：FALSE=英文(英), TRUE=中文(简体)
+// IME 中英文状态：FALSE=英文(英), TRUE=中文(中)
 BOOL        g_langCN = FALSE;
+
+// Fn 功能键层：TRUE 时数字行显示为 F1~F12
+BOOL        g_fnLayer = FALSE;
 
 #define MAX_KEYS 120
 KeyDef g_keys[MAX_KEYS];
@@ -428,6 +431,7 @@ static void BuildKeys() {
 static void SwitchMode() {
     g_9key = !g_9key;
     if (!g_9key) g_sym = FALSE;  // 全键盘无 &123 符号层，复位符号模式
+    g_fnLayer = FALSE;           // 复位 Fn 功能键层
     InitWindowSizeForDpi();
     RECT work = {0};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
@@ -510,6 +514,17 @@ static wchar_t GetSymForKey(short vk, BOOL shifted) {
     return 0;
 }
 
+// Fn 层映射：数字行物理键 (1~0 和 - =) 对应 F1~F12，返回 0 表示无映射
+static int FnMap(short vk) {
+    switch (vk) {
+        case 0x31: return 1;  case 0x32: return 2;  case 0x33: return 3;
+        case 0x34: return 4;  case 0x35: return 5;  case 0x36: return 6;
+        case 0x37: return 7;  case 0x38: return 8;  case 0x39: return 9;
+        case 0x30: return 10; case 0xBD: return 11; case 0xBB: return 12;
+    }
+    return 0;
+}
+
 static const wchar_t* LetterKeyText(short vk) {
     if (g_sym) {
         int idx = (vk >= 0x41 && vk <= 0x5A) ? (vk - 0x41) : 0;
@@ -530,6 +545,10 @@ static const wchar_t* KeyText(const KeyDef* k) {
         return LetterKeyText(k->vk);
     }
     if (k->type == K_NORMAL) {
+        if (g_fnLayer) {
+            int fn = FnMap(k->vk);
+            if (fn) { swprintf(buf, 16, L"F%d", fn); return buf; }
+        }
         wchar_t ch = GetSymForKey(k->vk, g_sh);
         if (ch) { buf[0] = ch; buf[1] = 0; return buf; }
     }
@@ -551,7 +570,7 @@ static const wchar_t* KeyText(const KeyDef* k) {
         case 0x28: return L"\x2193";
         case 0xC0: return L"\x60";
     }
-    if (k->type == K_LANG) return g_langCN ? L"\x7B80\x4F53" : L"\x82F1";
+    if (k->type == K_LANG) return g_langCN ? L"\x4E2D" : L"\x82F1";
     if (k->type == K_MODE123) return g_sym ? L"abc" : L"&123";
     if (k->type == K_HIDE) return L"\x6536\x8D77";
     if (k->type == K_SPACE) return L"\x7A7A\x683C";
@@ -566,6 +585,7 @@ static BOOL IsActive(const KeyDef* k) {
     if (k->vk == 0x12 && g_al && !g_shortPress) return TRUE;
     if (k->type == K_MODE123 && g_sym) return TRUE;
     if (k->type == K_LANG && g_langCN) return TRUE;
+    if (k->type == K_SPECIAL && k->vk == 0 && g_fnLayer) return TRUE;
     return FALSE;
 }
 
@@ -728,11 +748,25 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
         }
         break;
     case K_NORMAL:
+        if (g_fnLayer) {
+            int fn = FnMap(k->vk);
+            if (fn) {
+                SendKey((BYTE)(0x6F + fn), FALSE, FALSE, FALSE);  // VK_F1=0x70
+                g_fnLayer = FALSE;
+                InvalidateRect(g_hWnd, 0, TRUE);
+                break;
+            }
+        }
         SendKey(k->vk, g_sh, g_ct, g_al);
         g_sh = FALSE; g_ct = FALSE; g_al = FALSE;
         break;
     case K_SPECIAL:
-        if (k->vk == 0) break;  // Fn 键：占位，无动作
+        if (k->vk == 0) {  // Fn 键：切换 F1~F12 功能层
+            g_fnLayer = !g_fnLayer;
+            if (g_fnLayer) g_sh = FALSE;  // 与 Shift 符号层互斥
+            InvalidateRect(g_hWnd, 0, TRUE);
+            break;
+        }
         SendKey(k->vk, g_sh, g_ct, g_al);
         if (k->vk != 0x14 && k->vk != 0x5B) { g_sh = FALSE; g_ct = FALSE; g_al = FALSE; }
         break;
@@ -743,7 +777,10 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
             if (k->vk == 0x11) g_ct = FALSE;
             if (k->vk == 0x12) g_al = FALSE;
         } else {
-            if (k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) g_sh = !g_sh;
+            if (k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) {
+                g_sh = !g_sh;
+                if (g_sh) g_fnLayer = FALSE;  // Shift 符号层与 Fn 层互斥
+            }
             else if (k->vk == 0x11) g_ct = !g_ct;
             else if (k->vk == 0x12) g_al = !g_al;
         }
@@ -1036,10 +1073,10 @@ static void ToggleKB() { ShowKB(!g_vis, TRUE); }
 
 static void PromptCloseAction(HWND hWnd) {
     int ret = MessageBoxW(hWnd,
-        L"\x8BF7\x9009\x62E9\x89E6\x6478\x952E\x76D8\x9000\x51FA\x65B9\x5F0F\xFF1A\n\n"
+        L"\x8BF7\x9009\x62E9\x5C4F\x5E55\x952E\x76D8\x9000\x51FA\x65B9\x5F0F\xFF1A\n\n"
         L"\x3010\x662F(Y)\x3011\x5B8C\x5168\x9000\x51FA\x7A0B\x5E8F\n"
         L"\x3010\x5426(N)\x3011\x9690\x85CF\x5230\x7CFB\x7EDF\x6258\x76D8",
-        L"\x89E6\x6478\x952E\x76D8",
+        L"\x5C4F\x5E55\x952E\x76D8",
         MB_YESNOCANCEL | MB_ICONQUESTION);
     if (ret == IDYES) {
         DestroyWindow(hWnd);
@@ -1072,17 +1109,17 @@ static void AddTray() {
     g_nid.uCallbackMessage = WM_TRAY;
     if (!g_hTrayIcon) g_hTrayIcon = LoadMainIcon(16);
     g_nid.hIcon = g_hTrayIcon;
-    strcpy(g_nid.szTip, "\xE8\xA7\xA6\xE6\x91\xB8\xE9\x94\xAE\xE7\x9B\x98");
+    strcpy(g_nid.szTip, "\xE5\xB1\x8F\xE5\xB9\x95\xE9\x94\xAE\xE7\x9B\x98");
     Shell_NotifyIconA(NIM_ADD, &g_nid);
     g_tray = TRUE;
 }
 
 static void ShowAboutDialog(HWND hWnd) {
     MessageBoxW(hWnd,
-        L"Touch Keyboard\n"
-        L"\x540D\x79F0\xFF1A\x89E6\x6478\x952E\x76D8\n"
-        L"\x4F5C\x8005\xFF1A\x6C5F\x5357\x4E00\x6839\x8471\n\n"
-        L"\x6781\x901F\x89E6\x63A7\x4E0E\x9AD8\x6E05\x5C4F\x663E\x8F93\x5165\x5DE5\x5177\n\n"
+        L"Screen Keyboard\n"
+        L"\x540D\x79F0\xFF1A\x5C4F\x5E55\x952E\x76D8\n"
+        L"\x4F5C\x8005\xFF1A\x6C5F\x5357\x4E00\x6839\x8471 & PanDaTech\n\n"
+        L"\x89E6\x63A7\x4E0E\x9AD8\x6E05\x5C4F\x663E\x8F93\x5165\x5DE5\x5177\n\n"
         L"\x3010\x547D\x4EE4\x884C\x53C2\x6570\x8BF4\x660E (CLI Parameters)\x3011\n"
         L"  -show      : \x542F\x52A8\x65F6\x76F4\x63A5\x5F39\x51FA\x663E\x793A\x952E\x76D8\n"
         L"  -hide      : \x542F\x52A8\x65F6\x9759\x9ED8\x9690\x85CF\x5230\x7CFB\x7EDF\x6258\x76D8\n"
@@ -1105,7 +1142,7 @@ static void ShowAboutDialog(HWND hWnd) {
 static void ShowMenu(HWND hWnd) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, ID_MENU_TOGGLE, g_vis ? L"\x9690\x85CF\x89E6\x6478\x952E\x76D8" : L"\x663E\x793A\x89E6\x6478\x952E\x76D8");
+    AppendMenuW(m, MF_STRING, ID_MENU_TOGGLE, g_vis ? L"\x9690\x85CF\x5C4F\x5E55\x952E\x76D8" : L"\x663E\x793A\x5C4F\x5E55\x952E\x76D8");
     AppendMenuW(m, MF_STRING, ID_MENU_MODE, g_9key ? L"\x5207\x6362\x4E3A\x5168\x952E\x76D8" : L"\x5207\x6362\x4E3A\x4E5D\x5BAB\x683C");
     AppendMenuW(m, MF_STRING, ID_MENU_AUTO, g_af ? L"\x7981\x7528\x81EA\x52A8\x547C\x51FA" : L"\x542F\x7528\x81EA\x52A8\x547C\x51FA");
 
@@ -1490,6 +1527,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
     return DefWindowProcW(hWnd, msg, w, l);
 }
 
+// 命令行参数整词匹配：避免 "-h" 误匹配 "-hide"/"-help"
+static BOOL HasArg(const char* cmd, const char* arg) {
+    if (!cmd || !arg) return FALSE;
+    size_t alen = strlen(arg);
+    if (alen == 0) return FALSE;
+    const char* p = cmd;
+    while ((p = strstr(p, arg)) != NULL) {
+        BOOL leftOk = (p == cmd) || (p[-1] == ' ' || p[-1] == '\t');
+        char after = p[alen];
+        BOOL rightOk = (after == 0 || after == ' ' || after == '\t');
+        if (leftOk && rightOk) return TRUE;
+        p += alen;
+    }
+    return FALSE;
+}
+
 int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
     g_hInst = hI;
 
@@ -1510,12 +1563,19 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
     BOOL fShort  = (strstr(cmd, "-short") != NULL);
     BOOL fDark   = (strstr(cmd, "-dark") != NULL);
     BOOL fLight  = (strstr(cmd, "-light") != NULL);
+    BOOL fHelp   = (HasArg(cmd, "-h") || HasArg(cmd, "-help") || HasArg(cmd, "-?"));
 
     // 主题参数解析
     if (fDark) g_themeMode = 1;
     else if (fLight) g_themeMode = 2;
     else g_themeMode = 0;  // 默认跟随系统
     ApplyTheme();
+
+    // -h / -help / -? ：仅弹出关于页，不打开主界面
+    if (fHelp) {
+        ShowAboutDialog(NULL);
+        return 0;
+    }
 
     BOOL isTouch = IsTouchDevice();
 
@@ -1550,7 +1610,7 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
     RECT work = {0};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     HWND hWnd = CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST,
-        L"UI_TouchKeyboard", L"\x89E6\x6478\x952E\x76D8", WS_POPUP,
+        L"UI_TouchKeyboard", L"\x5C4F\x5E55\x952E\x76D8", WS_POPUP,
         work.left + ((work.right - work.left) - g_ww) / 2,
         work.bottom - g_wh - 6,
         g_ww, g_wh, 0, 0, hI, 0);

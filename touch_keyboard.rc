@@ -18,12 +18,12 @@ BEGIN
         BLOCK "080404b0"
         BEGIN
             VALUE "CompanyName", "TouchKeyboard"
-            VALUE "FileDescription", "Touch Keyboard"
+            VALUE "FileDescription", "Screen Keyboard"
             VALUE "FileVersion", VER_FILEVERSION_STR
             VALUE "InternalName", "UI_TouchKeyboard"
             VALUE "LegalCopyright", "Copyright (C) 2024-2026"
             VALUE "OriginalFilename", "UI_TouchKeyboard.exe"
-            VALUE "ProductName", "TouchKeyboard"
+            VALUE "ProductName", "ScreenKeyboard"
             VALUE "ProductVersion", VER_PRODUCTVERSION_STR
         END
     END
