@@ -287,19 +287,24 @@ static void Build9Keys() {
 }
 
 // ========== IME 中英文状态检测与切换 ==========
-// 通过 ImmGetConversionStatus 读取前台窗口的输入法转换模式
+// 通过 ImmGetConversionStatus 读取焦点控件的输入法转换模式
 static BOOL DetectImeChinese() {
     HWND fg = GetForegroundWindow();
-    if (!fg) return g_langCN;
+    if (!fg || fg == g_hWnd) return g_langCN;
     DWORD tid = GetWindowThreadProcessId(fg, NULL);
-    HIMC himc = ImmGetContext(fg);
+    // 优先取实际焦点控件（IME 上下文通常挂在聚焦的子控件上，如 Chrome/QQ 的输入区）
+    HWND target = fg;
+    GUITHREADINFO gi;
+    memset(&gi, 0, sizeof(gi));
+    gi.cbSize = sizeof(gi);
+    if (GetGUIThreadInfo(tid, &gi) && gi.hwndFocus) target = gi.hwndFocus;
+    HIMC himc = ImmGetContext(target);
     if (!himc) return g_langCN;
     DWORD conv = 0, sent = 0;
     BOOL ok = ImmGetConversionStatus(himc, &conv, &sent);
-    ImmReleaseContext(fg, himc);
-    (void)tid;
+    ImmReleaseContext(target, himc);
     if (!ok) return g_langCN;
-    // 中文输入法处于“ native/中文”转换模式即视为中文状态
+    // 中文输入法处于 native/中文转换模式即视为中文状态
     return (conv & IME_CMODE_NATIVE) != 0;
 }
 
@@ -499,7 +504,7 @@ static void DrawTextC(HDC dc, int x, int y, int w, int h, const wchar_t* s, HFON
     SelectObject(dc, f);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, c);
-    DrawTextW(dc, s, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(dc, s, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 }
 
 static wchar_t GetSymForKey(short vk, BOOL shifted) {
@@ -1116,9 +1121,8 @@ static void AddTray() {
 
 static void ShowAboutDialog(HWND hWnd) {
     MessageBoxW(hWnd,
-        L"Screen Keyboard\n"
-        L"\x540D\x79F0\xFF1A\x5C4F\x5E55\x952E\x76D8\n"
-        L"\x4F5C\x8005\xFF1A\x6C5F\x5357\x4E00\x6839\x8471 & PanDaTech\n\n"
+        L"Screen Keyboard \x5C4F\x5E55\x952E\x76D8\n"
+        L"Powered By \x6C5F\x5357\x4E00\x6839\x8471 & PanDaTech\n\n"
         L"\x89E6\x63A7\x4E0E\x9AD8\x6E05\x5C4F\x663E\x8F93\x5165\x5DE5\x5177\n\n"
         L"\x3010\x547D\x4EE4\x884C\x53C2\x6570\x8BF4\x660E (CLI Parameters)\x3011\n"
         L"  -show      : \x542F\x52A8\x65F6\x76F4\x63A5\x5F39\x51FA\x663E\x793A\x952E\x76D8\n"
