@@ -1,0 +1,15 @@
+# Build outputs
+build/
+dist/
+
+# Downloaded dependencies (YY-Thunks, VC-LTL from NuGet)
+deps/
+
+# IDE
+.vs/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+Desktop.ini

@@ -1,4 +1,5 @@
-// touch_keyboard.cpp - NB Touch Keyboard (Pure Win32 C++)
+// touch_keyboard.cpp - Touch Keyboard (Pure Win32 C++)
+// SPDX-License-Identifier: GPL-3.0-or-later
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0501
 #include <windows.h>
@@ -36,23 +37,101 @@ int g_keyHeight = 46;
 #define ID_MENU_TOGGLE 10001
 #define ID_MENU_AUTO   10002
 #define ID_MENU_MODE   10003
+#define ID_MENU_THEME  10004
 #define ID_MENU_ABOUT  10008
 #define ID_MENU_EXIT   10009
 
-// Win11 Modern Colors (RGB)
-#define C_BG           0x1F1F1F
-#define C_HDR          0x181818
-#define C_KEY          0x2C2C2C
-#define C_KEY_BORDER   0x3A3A3A
-#define C_DARK         0x242424
-#define C_HOVER        0x383838
-#define C_HOT          0x0078D4
-#define C_WHITE        0xF5F5F5
-#define C_DIM          0xA0A0A0
-#define C_SUBTEXT      0x40B0FF  // 亮眼青蓝提示字
-#define C_BUBBLE_BG    0x2B2B2B
-#define C_BUBBLE_ITEM  0x333333
-#define C_BUBBLE_BORDER 0x555555
+// ========== Theme System ==========
+struct ThemeColors {
+    DWORD bg;
+    DWORD hdr;
+    DWORD key;
+    DWORD keyBorder;
+    DWORD dark;
+    DWORD hover;
+    DWORD hot;
+    DWORD text;
+    DWORD dim;
+    DWORD subtext;
+    DWORD bubbleBg;
+    DWORD bubbleItem;
+    DWORD bubbleBorder;
+};
+
+// Win11 Dark Theme (BGR format for GDI)
+static const ThemeColors g_darkTheme = {
+    0x1F1F1F,  // bg
+    0x181818,  // hdr
+    0x2C2C2C,  // key
+    0x3A3A3A,  // keyBorder
+    0x242424,  // dark
+    0x383838,  // hover
+    0xD47800,  // hot (Win11 accent blue #0078D4 in BGR)
+    0xF5F5F5,  // text
+    0xA0A0A0,  // dim
+    0xFFB040,  // subtext (cyan-blue #40B0FF in BGR)
+    0x2B2B2B,  // bubbleBg
+    0x333333,  // bubbleItem
+    0x555555   // bubbleBorder
+};
+
+// Win11 Light Theme (BGR format for GDI)
+static const ThemeColors g_lightTheme = {
+    0xF3F3F3,  // bg
+    0xEAEAEA,  // hdr
+    0xFFFFFF,  // key
+    0xD6D6D6,  // keyBorder
+    0xE8E8E8,  // dark
+    0xF0F0F0,  // hover
+    0xD47800,  // hot (Win11 accent blue #0078D4 in BGR)
+    0x1A1A1A,  // text
+    0x666666,  // dim
+    0xCC7700,  // subtext (darker cyan for light bg)
+    0xF5F5F5,  // bubbleBg
+    0xFFFFFF,  // bubbleItem
+    0xCCCCCC   // bubbleBorder
+};
+
+// Theme mode: 0 = follow system, 1 = force dark, 2 = force light
+static int g_themeMode = 0;
+static const ThemeColors* g_theme = &g_darkTheme;
+
+static BOOL IsSystemDarkMode() {
+    HKEY hKey;
+    DWORD val = 1, sz = sizeof(val);
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExW(hKey, L"AppsUseLightTheme", NULL, NULL, (LPBYTE)&val, &sz);
+        RegCloseKey(hKey);
+    }
+    return (val == 0);
+}
+
+static void ApplyTheme() {
+    if (g_themeMode == 1) {
+        g_theme = &g_darkTheme;
+    } else if (g_themeMode == 2) {
+        g_theme = &g_lightTheme;
+    } else {
+        g_theme = IsSystemDarkMode() ? &g_darkTheme : &g_lightTheme;
+    }
+}
+
+// Convenience macros to access current theme colors
+#define C_BG           (g_theme->bg)
+#define C_HDR          (g_theme->hdr)
+#define C_KEY          (g_theme->key)
+#define C_KEY_BORDER   (g_theme->keyBorder)
+#define C_DARK         (g_theme->dark)
+#define C_HOVER        (g_theme->hover)
+#define C_HOT          (g_theme->hot)
+#define C_WHITE        (g_theme->text)
+#define C_DIM          (g_theme->dim)
+#define C_SUBTEXT      (g_theme->subtext)
+#define C_BUBBLE_BG    (g_theme->bubbleBg)
+#define C_BUBBLE_ITEM  (g_theme->bubbleItem)
+#define C_BUBBLE_BORDER (g_theme->bubbleBorder)
 
 enum KeyType {
     K_NORMAL, K_LETTER, K_MOD, K_CAPS, K_IME, K_MODE123,
@@ -402,7 +481,7 @@ static const wchar_t* KeyText(const KeyDef* k) {
     switch (k->vk) {
         case 0x1B: return L"Esc";
         case 0x2E: return L"Del";
-        case 0x08: return L"←";
+        case 0x08: return L"\x2190";
         case 0x09: return L"Tab";
         case 0x0D: return L"Enter";
         case 0x14: return L"Caps";
@@ -410,15 +489,15 @@ static const wchar_t* KeyText(const KeyDef* k) {
         case 0x11: return L"Ctrl";
         case 0x12: return L"Alt";
         case 0x5B: return L"Win";
-        case 0x20: return L"空格";
-        case 0x25: return L"←"; // 关键修复：换用 100% 兼容的标准方向符 U+2190
-        case 0x26: return L"↑"; // U+2191
-        case 0x27: return L"→"; // 关键修复：换用 100% 兼容的标准方向符 U+2192
-        case 0x28: return L"↓"; // U+2193
+        case 0x20: return L"\x7A7A\x683C";
+        case 0x25: return L"\x2190";
+        case 0x26: return L"\x2191";
+        case 0x27: return L"\x2192";
+        case 0x28: return L"\x2193";
     }
     if (k->type == K_MODE123) return g_sym ? L"abc" : L"&123";
-    if (k->type == K_HIDE) return L"收起";
-    if (k->type == K_SPACE) return L"空格";
+    if (k->type == K_HIDE) return L"\x6536\x8D77";
+    if (k->type == K_SPACE) return L"\x7A7A\x683C";
     return L"";
 }
 
@@ -431,25 +510,86 @@ static BOOL IsActive(const KeyDef* k) {
     return FALSE;
 }
 
+// ========== IME-Compatible Input Injection ==========
+// 修复 #2: 使用 SendInput 替代已废弃的 keybd_event()
+// 修复 #5: 使用 MapVirtualKeyW (Unicode 版本) 并正确设置扫描码与扩展键标志
 static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
-    BYTE sc = MapVirtualKeyA(vk, 0);
-    DWORD flags = 0;
-    if (vk == 0xA1 || vk == 0xA3 || vk == 0xA5) {
-        flags |= KEYEVENTF_EXTENDEDKEY;
+    INPUT inputs[10] = {};
+    int count = 0;
+
+    // 使用 MapVirtualKeyW 获取正确扫描码（修复 #5: 部分 IME 依赖正确扫描码）
+    UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+
+    // 判断扩展键（右 Shift/Ctrl/Alt, 方向键, Win 等）
+    BOOL isExtended = (vk == VK_RSHIFT || vk == VK_RCONTROL || vk == VK_RMENU ||
+                       vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN ||
+                       vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT ||
+                       vk == VK_INSERT || vk == VK_DELETE || vk == VK_LWIN || vk == VK_RWIN);
+
+    DWORD extFlag = isExtended ? KEYEVENTF_EXTENDEDKEY : 0;
+
+    // 按下修饰键
+    if (ct) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_CONTROL;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC);
+        count++;
+    }
+    if (al) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_MENU;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_MENU, MAPVK_VK_TO_VSC);
+        inputs[count].ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+        count++;
+    }
+    if (sh) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_SHIFT;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC);
+        count++;
     }
 
-    if (ct) keybd_event(VK_CONTROL, 0, 0, 0);
-    if (al) keybd_event(VK_MENU, 0, 0, 0);
-    if (sh) keybd_event(VK_SHIFT, 0, 0, 0);
+    // 目标键 down + up（以 VK 形式发送，TSF/IME 可正确拦截 WM_KEYDOWN）
+    inputs[count].type = INPUT_KEYBOARD;
+    inputs[count].ki.wVk = vk;
+    inputs[count].ki.wScan = (WORD)sc;
+    inputs[count].ki.dwFlags = extFlag;
+    count++;
 
-    keybd_event(vk, sc, flags, 0);
-    keybd_event(vk, sc, flags | KEYEVENTF_KEYUP, 0);
+    inputs[count].type = INPUT_KEYBOARD;
+    inputs[count].ki.wVk = vk;
+    inputs[count].ki.wScan = (WORD)sc;
+    inputs[count].ki.dwFlags = extFlag | KEYEVENTF_KEYUP;
+    count++;
 
-    if (sh) keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0);
-    if (al) keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
-    if (ct) keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+    // 释放修饰键
+    if (sh) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_SHIFT;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC);
+        inputs[count].ki.dwFlags = KEYEVENTF_KEYUP;
+        count++;
+    }
+    if (al) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_MENU;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_MENU, MAPVK_VK_TO_VSC);
+        inputs[count].ki.dwFlags = KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY;
+        count++;
+    }
+    if (ct) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_CONTROL;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC);
+        inputs[count].ki.dwFlags = KEYEVENTF_KEYUP;
+        count++;
+    }
+
+    SendInput(count, inputs, sizeof(INPUT));
 }
 
+// SendChar 仅用于不需要 IME 组合的纯 Unicode 字符（如九宫格选字中的标点符号）
+// 修复 #1/#3/#4: 字母和数字不再走此路径，改为通过 SendKey(VK) 发送
 static void SendChar(wchar_t ch) {
     INPUT in[2] = {};
     in[0].type = INPUT_KEYBOARD;
@@ -461,6 +601,56 @@ static void SendChar(wchar_t ch) {
     SendInput(2, in, sizeof(INPUT));
 }
 
+// 将字符映射为虚拟键码 + Shift 状态，通过 SendKey 发送以经过 IME/TSF 管线
+// 修复 #3: 符号模式下字母键通过 VK 发送
+// 修复 #4: 九宫格模式字母/数字通过 VK 发送
+static void SendCharViaVK(wchar_t ch) {
+    BYTE vk = 0;
+    BOOL needShift = FALSE;
+
+    if (ch >= L'a' && ch <= L'z') {
+        vk = (BYTE)(ch - L'a' + 'A');  // VK_A ~ VK_Z
+    } else if (ch >= L'A' && ch <= L'Z') {
+        vk = (BYTE)ch;
+        needShift = TRUE;
+    } else if (ch >= L'0' && ch <= L'9') {
+        vk = (BYTE)ch;  // VK_0 ~ VK_9 (0x30~0x39)
+    } else {
+        // 标点符号映射到对应物理键位
+        switch (ch) {
+            case L'!': vk = 0x31; needShift = TRUE; break;
+            case L'@': vk = 0x32; needShift = TRUE; break;
+            case L'#': vk = 0x33; needShift = TRUE; break;
+            case L'$': vk = 0x34; needShift = TRUE; break;
+            case L'%': vk = 0x35; needShift = TRUE; break;
+            case L'^': vk = 0x36; needShift = TRUE; break;
+            case L'&': vk = 0x37; needShift = TRUE; break;
+            case L'*': vk = 0x38; needShift = TRUE; break;
+            case L'(': vk = 0x39; needShift = TRUE; break;
+            case L')': vk = 0x30; needShift = TRUE; break;
+            case L'-': case L'_': vk = 0xBD; needShift = (ch == L'_'); break;
+            case L'=': case L'+': vk = 0xBB; needShift = (ch == L'+'); break;
+            case L'[': case L'{': vk = 0xDB; needShift = (ch == L'{'); break;
+            case L']': case L'}': vk = 0xDD; needShift = (ch == L'}'); break;
+            case L'\\': case L'|': vk = 0xDC; needShift = (ch == L'|'); break;
+            case L';': case L':': vk = 0xBA; needShift = (ch == L':'); break;
+            case L'\'': case L'"': vk = 0xDE; needShift = (ch == L'"'); break;
+            case L',': case L'<': vk = 0xBC; needShift = (ch == L'<'); break;
+            case L'.': case L'>': vk = 0xBE; needShift = (ch == L'>'); break;
+            case L'/': case L'?': vk = 0xBF; needShift = (ch == L'?'); break;
+            case L'~': vk = 0xC0; needShift = TRUE; break;
+            case L'`': vk = 0xC0; needShift = FALSE; break;
+            case L' ': vk = VK_SPACE; break;
+            default:
+                // 无法映射的字符（如中文等），回退到 KEYEVENTF_UNICODE
+                SendChar(ch);
+                return;
+        }
+    }
+
+    SendKey(vk, needShift, FALSE, FALSE);
+}
+
 static void DoKeyAction(const KeyDef* k, BOOL isDown) {
     if (!k) return;
     switch (k->type) {
@@ -469,8 +659,9 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
             SendKey(k->vk, g_sh, g_ct, g_al);
             g_ct = FALSE; g_al = FALSE; g_sh = FALSE;
         } else if (g_sym) {
+            // 修复 #3: 符号模式下通过 VK 发送，让 IME 可拦截
             int idx = (k->vk >= 0x41 && k->vk <= 0x5A) ? k->vk - 0x41 : 0;
-            SendChar(g_symText[idx][0]);
+            SendCharViaVK(g_symText[idx][0]);
         } else {
             BOOL us = g_sh ? !(GetKeyState(VK_CAPITAL) & 1) : FALSE;
             SendKey(k->vk, us, FALSE, FALSE);
@@ -503,8 +694,9 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
         break;
     case K_9KEY:
         if (!isDown) {
+            // 修复 #4: 九宫格模式通过 VK 发送字母/数字，经过 IME 组合管线
             int d = (k->vk >= 0x30 && k->vk <= 0x39) ? (k->vk - 0x30) : 0;
-            SendChar(g_9keyChars[d][0]);
+            SendCharViaVK(g_9keyChars[d][0]);
         }
         break;
     case K_MODE123: g_sym = !g_sym; break;
@@ -638,7 +830,7 @@ static void DrawHeader(HDC dc) {
 
     // 左侧：实体 [ 菜单 ] 胶囊按钮
     DrawRoundRect(dc, xMenu, btnY, wMenu, btnH, C_KEY, C_KEY_BORDER, btnH / 2);
-    DrawTextC(dc, xMenu, btnY, wMenu, btnH, L"菜单", g_f12, C_WHITE);
+    DrawTextC(dc, xMenu, btnY, wMenu, btnH, L"\x83DC\x5355", g_f12, C_WHITE);
 
     // 标题
     int xTitle = xMenu + wMenu + gap;
@@ -650,21 +842,21 @@ static void DrawHeader(HDC dc) {
     // 右侧：短按开关
     DWORD shortBg = g_shortPress ? C_HOT : C_KEY;
     DrawRoundRect(dc, xShort, btnY, wShort, btnH, shortBg, C_KEY_BORDER, btnH / 2);
-    DrawTextC(dc, xShort, btnY, wShort, btnH, g_shortPress ? L"短按:开" : L"短按:关", g_f12, C_WHITE);
+    DrawTextC(dc, xShort, btnY, wShort, btnH, g_shortPress ? L"\x77ED\x6309:\x5F00" : L"\x77ED\x6309:\x5173", g_f12, C_WHITE);
 
     // 模式切换胶囊按钮
     DWORD modeBg = g_9key ? C_HOT : C_KEY;
     DrawRoundRect(dc, xMode, btnY, wMode, btnH, modeBg, C_KEY_BORDER, btnH / 2);
-    DrawTextC(dc, xMode, btnY, wMode, btnH, g_9key ? L"全键盘" : L"九宫格", g_f12, C_WHITE);
+    DrawTextC(dc, xMode, btnY, wMode, btnH, g_9key ? L"\x5168\x952E\x76D8" : L"\x4E5D\x5BAB\x683C", g_f12, C_WHITE);
 
     // 自动呼出胶囊按钮
     DWORD autoBg = g_af ? C_HOT : C_KEY;
     DrawRoundRect(dc, xAuto, btnY, wAuto, btnH, autoBg, C_KEY_BORDER, 12);
-    DrawTextC(dc, xAuto, btnY, wAuto, btnH, g_af ? L"自动呼出:开" : L"自动呼出:关", g_f12, C_WHITE);
+    DrawTextC(dc, xAuto, btnY, wAuto, btnH, g_af ? L"\x81EA\x52A8\x547C\x51FA:\x5F00" : L"\x81EA\x52A8\x547C\x51FA:\x5173", g_f12, C_WHITE);
 
     // 最小化与关闭按钮
-    DrawTextC(dc, xMin, 0, wMin, g_headerH, L"⊟", g_f14b, C_DIM);
-    DrawTextC(dc, xClose, 0, wClose, g_headerH, L"✕", g_f12, C_DIM);
+    DrawTextC(dc, xMin, 0, wMin, g_headerH, L"\x229F", g_f14b, C_DIM);
+    DrawTextC(dc, xClose, 0, wClose, g_headerH, L"\x2715", g_f12, C_DIM);
 }
 
 static void DrawKeys(HDC dc) {
@@ -782,8 +974,10 @@ static void ToggleKB() { ShowKB(!g_vis, TRUE); }
 
 static void PromptCloseAction(HWND hWnd) {
     int ret = MessageBoxW(hWnd,
-        L"请选择触摸键盘退出方式：\n\n【是(Y)】完全退出程序\n【否(N)】隐藏到系统托盘",
-        L"NB 触摸键盘",
+        L"\x8BF7\x9009\x62E9\x89E6\x6478\x952E\x76D8\x9000\x51FA\x65B9\x5F0F\xFF1A\n\n"
+        L"\x3010\x662F(Y)\x3011\x5B8C\x5168\x9000\x51FA\x7A0B\x5E8F\n"
+        L"\x3010\x5426(N)\x3011\x9690\x85CF\x5230\x7CFB\x7EDF\x6258\x76D8",
+        L"\x89E6\x6478\x952E\x76D8",
         MB_YESNOCANCEL | MB_ICONQUESTION);
     if (ret == IDYES) {
         DestroyWindow(hWnd);
@@ -816,43 +1010,54 @@ static void AddTray() {
     g_nid.uCallbackMessage = WM_TRAY;
     if (!g_hTrayIcon) g_hTrayIcon = LoadMainIcon(16);
     g_nid.hIcon = g_hTrayIcon;
-    strcpy(g_nid.szTip, "NB 触摸键盘");
+    strcpy(g_nid.szTip, "\xE8\xA7\xA6\xE6\x91\xB8\xE9\x94\xAE\xE7\x9B\x98");
     Shell_NotifyIconA(NIM_ADD, &g_nid);
     g_tray = TRUE;
 }
 
 static void ShowAboutDialog(HWND hWnd) {
     MessageBoxW(hWnd,
-        L"Win11 Touch Keyboard\n"
-        L"名称：NB 触摸键盘\n"
-        L"作者：江南一根葱\n\n"
-        L"极速触控与高清屏显输入工具\n\n"
-        L"【命令行参数说明 (CLI Parameters)】\n"
-        L"  -show      : 启动时直接弹出显示键盘\n"
-        L"  -hide      : 启动时静默隐藏到系统托盘\n"
-        L"  -min / -tray: 最小化驻留托盘\n"
-        L"  -touchonly : 触摸屏专属，非触摸设备自动退出\n"
-        L"  -auto      : 默认启用点击编辑框自动呼出\n"
-        L"  -noauto    : 默认关闭点击编辑框自动呼出\n"
-        L"  -short     : 默认开启短按触发模式\n"
-        L"  -9key / -t9: 默认启动九宫格触摸模式\n"
-        L"  -full      : 默认启动全键盘模式\n\n"
-        L"【4K / 高 DPI 适配】\n"
-        L"  顶栏按钮与键盘全盘支持 4K (200%~250% DPI) 动态推算矢量对齐！",
-        L"关于与参数说明",
+        L"Touch Keyboard\n"
+        L"\x540D\x79F0\xFF1A\x89E6\x6478\x952E\x76D8\n"
+        L"\x4F5C\x8005\xFF1A\x6C5F\x5357\x4E00\x6839\x8471\n\n"
+        L"\x6781\x901F\x89E6\x63A7\x4E0E\x9AD8\x6E05\x5C4F\x663E\x8F93\x5165\x5DE5\x5177\n\n"
+        L"\x3010\x547D\x4EE4\x884C\x53C2\x6570\x8BF4\x660E (CLI Parameters)\x3011\n"
+        L"  -show      : \x542F\x52A8\x65F6\x76F4\x63A5\x5F39\x51FA\x663E\x793A\x952E\x76D8\n"
+        L"  -hide      : \x542F\x52A8\x65F6\x9759\x9ED8\x9690\x85CF\x5230\x7CFB\x7EDF\x6258\x76D8\n"
+        L"  -min / -tray: \x6700\x5C0F\x5316\x9A7B\x7559\x6258\x76D8\n"
+        L"  -touchonly : \x89E6\x6478\x5C4F\x4E13\x5C5E\xFF0C\x975E\x89E6\x6478\x8BBE\x5907\x81EA\x52A8\x9000\x51FA\n"
+        L"  -auto      : \x9ED8\x8BA4\x542F\x7528\x70B9\x51FB\x7F16\x8F91\x6846\x81EA\x52A8\x547C\x51FA\n"
+        L"  -noauto    : \x9ED8\x8BA4\x5173\x95ED\x70B9\x51FB\x7F16\x8F91\x6846\x81EA\x52A8\x547C\x51FA\n"
+        L"  -short     : \x9ED8\x8BA4\x5F00\x542F\x77ED\x6309\x89E6\x53D1\x6A21\x5F0F\n"
+        L"  -9key / -t9: \x9ED8\x8BA4\x542F\x52A8\x4E5D\x5BAB\x683C\x89E6\x6478\x6A21\x5F0F\n"
+        L"  -full      : \x9ED8\x8BA4\x542F\x52A8\x5168\x952E\x76D8\x6A21\x5F0F\n"
+        L"  -dark      : \x5F3A\x5236\x6DF1\x8272\x4E3B\x9898\n"
+        L"  -light     : \x5F3A\x5236\x6D45\x8272\x4E3B\x9898\n"
+        L"  -theme:system : \x8DDF\x968F\x7CFB\x7EDF\x4E3B\x9898\xFF08\x9ED8\x8BA4\xFF09\n\n"
+        L"\x3010 4K / \x9AD8 DPI \x9002\x914D\x3011\n"
+        L"  \x9876\x680F\x6309\x94AE\x4E0E\x952E\x76D8\x5168\x76D8\x652F\x6301 4K (200%~250% DPI) \x52A8\x6001\x63A8\x7B97\x77E2\x91CF\x5BF9\x9F50\xFF01",
+        L"\x5173\x4E8E\x4E0E\x53C2\x6570\x8BF4\x660E",
         MB_OK | MB_ICONINFORMATION);
 }
 
 static void ShowMenu(HWND hWnd) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, ID_MENU_TOGGLE, g_vis ? L"隐藏触摸键盘" : L"显示触摸键盘");
-    AppendMenuW(m, MF_STRING, ID_MENU_MODE, g_9key ? L"切换为全键盘" : L"切换为九宫格");
-    AppendMenuW(m, MF_STRING, ID_MENU_AUTO, g_af ? L"禁用自动呼出" : L"启用自动呼出");
+    AppendMenuW(m, MF_STRING, ID_MENU_TOGGLE, g_vis ? L"\x9690\x85CF\x89E6\x6478\x952E\x76D8" : L"\x663E\x793A\x89E6\x6478\x952E\x76D8");
+    AppendMenuW(m, MF_STRING, ID_MENU_MODE, g_9key ? L"\x5207\x6362\x4E3A\x5168\x952E\x76D8" : L"\x5207\x6362\x4E3A\x4E5D\x5BAB\x683C");
+    AppendMenuW(m, MF_STRING, ID_MENU_AUTO, g_af ? L"\x7981\x7528\x81EA\x52A8\x547C\x51FA" : L"\x542F\x7528\x81EA\x52A8\x547C\x51FA");
+
+    // 主题切换子菜单
+    HMENU themeMenu = CreatePopupMenu();
+    AppendMenuW(themeMenu, MF_STRING | (g_themeMode == 0 ? MF_CHECKED : 0), ID_MENU_THEME + 1, L"\x8DDF\x968F\x7CFB\x7EDF");
+    AppendMenuW(themeMenu, MF_STRING | (g_themeMode == 1 ? MF_CHECKED : 0), ID_MENU_THEME + 2, L"\x6DF1\x8272\x4E3B\x9898");
+    AppendMenuW(themeMenu, MF_STRING | (g_themeMode == 2 ? MF_CHECKED : 0), ID_MENU_THEME + 3, L"\x6D45\x8272\x4E3B\x9898");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)themeMenu, L"\x4E3B\x9898");
+
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING, ID_MENU_ABOUT, L"关于与命令行参数说明");
+    AppendMenuW(m, MF_STRING, ID_MENU_ABOUT, L"\x5173\x4E8E\x4E0E\x547D\x4EE4\x884C\x53C2\x6570\x8BF4\x660E");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING, ID_MENU_EXIT, L"退出键盘");
+    AppendMenuW(m, MF_STRING, ID_MENU_EXIT, L"\x9000\x51FA\x952E\x76D8");
 
     SetForegroundWindow(hWnd);
     int id = TrackPopupMenu(m, TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hWnd, NULL);
@@ -865,6 +1070,12 @@ static void ShowMenu(HWND hWnd) {
     } else if (id == ID_MENU_AUTO) {
         g_af = !g_af;
         InvalidateRect(hWnd, 0, TRUE);
+    } else if (id == ID_MENU_THEME + 1) {
+        g_themeMode = 0; ApplyTheme(); InvalidateRect(hWnd, 0, TRUE);
+    } else if (id == ID_MENU_THEME + 2) {
+        g_themeMode = 1; ApplyTheme(); InvalidateRect(hWnd, 0, TRUE);
+    } else if (id == ID_MENU_THEME + 3) {
+        g_themeMode = 2; ApplyTheme(); InvalidateRect(hWnd, 0, TRUE);
     } else if (id == ID_MENU_ABOUT) {
         ShowAboutDialog(hWnd);
     } else if (id == ID_MENU_EXIT) {
@@ -959,7 +1170,8 @@ static void OnLUp(HWND hWnd, int x, int y) {
     if (g_bubble.active) {
         if (g_bubble.selIdx >= 0 && g_bubble.selIdx < 5) {
             wchar_t ch = g_bubble.chars[g_bubble.selIdx];
-            if (ch != 0) SendChar(ch);
+            // 修复 #4: 气泡选字也通过 VK 发送，经过 IME 管线
+            if (ch != 0) SendCharViaVK(ch);
         }
         g_bubble.active = FALSE;
         g_pk = -1;
@@ -1105,6 +1317,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
             ShowKB(TRUE, FALSE);
         }
         return 0;
+    case WM_SETTINGCHANGE: {
+        // 跟随系统主题自动切换（仅 themeMode==0 时生效）
+        if (g_themeMode == 0 && l != 0) {
+            const wchar_t* section = (const wchar_t*)l;
+            if (wcscmp(section, L"ImmersiveColorSet") == 0) {
+                const ThemeColors* oldTheme = g_theme;
+                ApplyTheme();
+                if (g_theme != oldTheme) {
+                    InvalidateRect(hWnd, 0, TRUE);
+                }
+            }
+        }
+        return 0;
+    }
     case WM_TIMER:
         if (w == TIMER_LONGPRESS) {
             KillTimer(hWnd, TIMER_LONGPRESS);
@@ -1164,8 +1390,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
         switch (LOWORD(w)) {
         case ID_MENU_TOGGLE: ToggleKB(); break;
         case ID_MENU_AUTO: g_af = !g_af; InvalidateRect(hWnd, 0, TRUE); break;
+        case ID_MENU_THEME + 1: g_themeMode = 0; ApplyTheme(); InvalidateRect(hWnd, 0, TRUE); break;
+        case ID_MENU_THEME + 2: g_themeMode = 1; ApplyTheme(); InvalidateRect(hWnd, 0, TRUE); break;
+        case ID_MENU_THEME + 3: g_themeMode = 2; ApplyTheme(); InvalidateRect(hWnd, 0, TRUE); break;
         case ID_MENU_ABOUT: ShowAboutDialog(hWnd); break;
         case ID_MENU_EXIT: PromptCloseAction(hWnd); break;
+        }
+        return 0;
+    case WM_TRAY:
+        if (l == WM_LBUTTONUP || l == WM_LBUTTONDBLCLK) {
+            ToggleKB();
+        } else if (l == WM_RBUTTONUP) {
+            ShowMenu(hWnd);
         }
         return 0;
     case WM_CLOSE: PromptCloseAction(hWnd); return 0;
@@ -1201,6 +1437,14 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
     BOOL fAuto   = (strstr(cmd, "-auto") != NULL);
     BOOL fNoAuto = (strstr(cmd, "-noauto") != NULL);
     BOOL fShort  = (strstr(cmd, "-short") != NULL);
+    BOOL fDark   = (strstr(cmd, "-dark") != NULL);
+    BOOL fLight  = (strstr(cmd, "-light") != NULL);
+
+    // 主题参数解析
+    if (fDark) g_themeMode = 1;
+    else if (fLight) g_themeMode = 2;
+    else g_themeMode = 0;  // 默认跟随系统
+    ApplyTheme();
 
     BOOL isTouch = IsTouchDevice();
 
@@ -1235,7 +1479,7 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
     RECT work = {0};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     HWND hWnd = CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST,
-        L"UI_TouchKeyboard", L"NB 触摸键盘", WS_POPUP,
+        L"UI_TouchKeyboard", L"\x89E6\x6478\x952E\x76D8", WS_POPUP,
         work.left + ((work.right - work.left) - g_ww) / 2,
         work.bottom - g_wh - 6,
         g_ww, g_wh, 0, 0, hI, 0);
