@@ -20,8 +20,15 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup MSVC
-      uses: microsoft/setup-msbuild@v2
+    - name: Locate Visual Studio
+      id: vs
+      shell: cmd
+      run: |
+        set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+        for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -property installationPath`) do (
+            echo VS_PATH=%%i>> "%GITHUB_OUTPUT%"
+            echo [Info] Found VS at: %%i
+        )
 
     - name: Download YY-Thunks & VC-LTL (NuGet)
       shell: pwsh
@@ -42,27 +49,30 @@ jobs:
         Expand-Archive -Path deps/vc-ltl.zip -DestinationPath deps/VC-LTL -Force
         Remove-Item deps/vc-ltl.zip
 
-        # 列出目录结构以便调试
-        Write-Host "`n=== deps/YY-Thunks structure ==="
-        Get-ChildItem -Path deps/YY-Thunks -Recurse -File | Select-Object -First 30 | ForEach-Object { $_.FullName }
-        Write-Host "`n=== deps/VC-LTL structure (first 30) ==="
-        Get-ChildItem -Path deps/VC-LTL -Recurse -File | Select-Object -First 30 | ForEach-Object { $_.FullName }
+        Write-Host "`nDependencies ready."
 
     - name: Build x86
       shell: cmd
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x86
+        call "${{ steps.vs.outputs.VS_PATH }}\Common7\Tools\VsDevCmd.bat" -arch=x86
+        if %errorlevel% neq 0 (
+            echo [Error] Failed to init MSVC x86 environment.
+            exit /b 1
+        )
         if not exist "build\x86" mkdir "build\x86"
         if not exist "dist\x86" mkdir "dist\x86"
 
         rem Locate YY-Thunks obj
         set "YY_OBJ="
-        for /f "delims=" %%f in ('dir /s /b "deps\YY-Thunks\YY_Thunks_for_WinXP.obj" 2^>nul') do set "YY_OBJ=%%f"
+        for /f "delims=" %%f in ('dir /s /b "deps\YY-Thunks\YY_Thunks_for_WinXP.obj" 2^>nul') do (
+            echo %%f | findstr /i "x86" >nul && set "YY_OBJ=%%f"
+        )
         if defined YY_OBJ (echo [x86] YY-Thunks: %YY_OBJ%) else (echo [x86] YY-Thunks obj not found!)
 
         rem Locate VC-LTL paths
         set "LTL_INC="
         set "LTL_LIB="
+        set "LTL_INC2="
         for /f "delims=" %%d in ('dir /s /b /ad "deps\VC-LTL\header" 2^>nul') do (
             if not defined LTL_INC set "LTL_INC=%%d"
         )
@@ -99,7 +109,11 @@ jobs:
     - name: Build x64
       shell: cmd
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+        call "${{ steps.vs.outputs.VS_PATH }}\Common7\Tools\VsDevCmd.bat" -arch=x64
+        if %errorlevel% neq 0 (
+            echo [Error] Failed to init MSVC x64 environment.
+            exit /b 1
+        )
         if not exist "build\x64" mkdir "build\x64"
         if not exist "dist\x64" mkdir "dist\x64"
 
@@ -113,6 +127,7 @@ jobs:
         rem Locate VC-LTL paths
         set "LTL_INC="
         set "LTL_LIB="
+        set "LTL_INC2="
         for /f "delims=" %%d in ('dir /s /b /ad "deps\VC-LTL\header" 2^>nul') do (
             if not defined LTL_INC set "LTL_INC=%%d"
         )
