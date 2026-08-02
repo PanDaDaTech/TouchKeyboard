@@ -257,9 +257,9 @@ if !errorlevel! neq 0 (
 rem Link
 echo [%ARCH%] Linking...
 if defined YY_THUNK_OBJ (
-    cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "%SRC%\build\%ARCH%\touch_keyboard.obj" "%SRC%\build\%ARCH%\touch_keyboard.res" "!YY_THUNK_OBJ!" /link /OUT:"%SRC%\dist\%ARCH%\UI_TouchKeyboard_%ARCH%.exe" /SUBSYSTEM:WINDOWS,%SUBSYS_VER% /MANIFEST:NO /CETCOMPAT:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib
+    cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "%SRC%\build\%ARCH%\touch_keyboard.obj" "%SRC%\build\%ARCH%\touch_keyboard.res" "!YY_THUNK_OBJ!" /link /OUT:"%SRC%\dist\%ARCH%\UI_TouchKeyboard_%ARCH%.exe" /SUBSYSTEM:WINDOWS,%SUBSYS_VER% /MANIFEST:NO /CETCOMPAT:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib Imm32.lib
 ) else (
-    cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "%SRC%\build\%ARCH%\touch_keyboard.obj" "%SRC%\build\%ARCH%\touch_keyboard.res" /link /OUT:"%SRC%\dist\%ARCH%\UI_TouchKeyboard_%ARCH%.exe" /SUBSYSTEM:WINDOWS,%SUBSYS_VER% /MANIFEST:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib
+    cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "%SRC%\build\%ARCH%\touch_keyboard.obj" "%SRC%\build\%ARCH%\touch_keyboard.res" /link /OUT:"%SRC%\dist\%ARCH%\UI_TouchKeyboard_%ARCH%.exe" /SUBSYSTEM:WINDOWS,%SUBSYS_VER% /MANIFEST:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib Imm32.lib
 )
 if !errorlevel! neq 0 (
     echo [Error] Linking failed.

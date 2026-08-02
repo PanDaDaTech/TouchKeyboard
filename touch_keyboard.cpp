@@ -6,9 +6,12 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <imm.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
+#pragma comment(lib, "Imm32.lib")
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -135,7 +138,8 @@ static void ApplyTheme() {
 
 enum KeyType {
     K_NORMAL, K_LETTER, K_MOD, K_CAPS, K_IME, K_MODE123,
-    K_SPECIAL, K_ARROW, K_SPACE, K_HIDE, K_DOCK, K_MIN, K_CLOSE, K_9KEY
+    K_SPECIAL, K_ARROW, K_SPACE, K_HIDE, K_DOCK, K_MIN, K_CLOSE, K_9KEY,
+    K_LANG, K_EMOJI
 };
 
 struct KeyDef { int x, y, w, h; short vk; KeyType type; };
@@ -157,6 +161,7 @@ static void PromptCloseAction(HWND hWnd);
 static void RecreateFontsAndLayout();
 static double GetSystemDpiScale();
 static void InitWindowSizeForDpi();
+static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al);
 
 // Global state
 HINSTANCE   g_hInst = 0;
@@ -183,6 +188,9 @@ NOTIFYICONDATAA g_nid;
 // 9-key state
 BOOL        g_9key = FALSE;
 PopupBubble g_bubble = {0};
+
+// IME 中英文状态：FALSE=英文(英), TRUE=中文(简体)
+BOOL        g_langCN = FALSE;
 
 #define MAX_KEYS 120
 KeyDef g_keys[MAX_KEYS];
@@ -275,6 +283,41 @@ static void Build9Keys() {
     for (int i = 0; i < 4; i++) { AddKey(x, y, w[i], kh, v3[i], t3[i]); x += w[i] + g_keyGap; }
 }
 
+// ========== IME 中英文状态检测与切换 ==========
+// 通过 ImmGetConversionStatus 读取前台窗口的输入法转换模式
+static BOOL DetectImeChinese() {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return g_langCN;
+    DWORD tid = GetWindowThreadProcessId(fg, NULL);
+    HIMC himc = ImmGetContext(fg);
+    if (!himc) return g_langCN;
+    DWORD conv = 0, sent = 0;
+    BOOL ok = ImmGetConversionStatus(himc, &conv, &sent);
+    ImmReleaseContext(fg, himc);
+    (void)tid;
+    if (!ok) return g_langCN;
+    // 中文输入法处于“ native/中文”转换模式即视为中文状态
+    return (conv & IME_CMODE_NATIVE) != 0;
+}
+
+// 切换中英文：发送右 Shift 脉冲（微软拼音/搜狗默认中英切换键）
+static void ToggleImeLang() {
+    SendKey(VK_RSHIFT, FALSE, FALSE, FALSE);
+    Sleep(60);
+    g_langCN = DetectImeChinese();
+    if (g_hWnd) InvalidateRect(g_hWnd, 0, TRUE);
+}
+
+// 打开 Win10/11 表情面板 (Win + .)
+static void OpenEmojiPanel() {
+    INPUT inputs[4] = {};
+    inputs[0].type = INPUT_KEYBOARD; inputs[0].ki.wVk = VK_LWIN;
+    inputs[1].type = INPUT_KEYBOARD; inputs[1].ki.wVk = VK_OEM_PERIOD;
+    inputs[2].type = INPUT_KEYBOARD; inputs[2].ki.wVk = VK_OEM_PERIOD; inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs[3].type = INPUT_KEYBOARD; inputs[3].ki.wVk = VK_LWIN; inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(4, inputs, sizeof(INPUT));
+}
+
 static void BuildKeys() {
     if (g_9key) { Build9Keys(); return; }
     g_nk = 0;
@@ -293,86 +336,98 @@ static void BuildKeys() {
 
     int y = g_headerH + g_keyGap + 2;
 
-    // Row 0: esc,1-0,-,=,del,backspace
+    // ===== Win10 屏幕键盘风格布局 =====
+    // Row 0: Esc, `, 1-0, -, =, Backspace  (15 keys)
     {
-        int fixed = (int)((52 + 55 + 65) * dpiScale * scaleX);
-        int aw = (KEY_AREA_W - fixed - 14 * g_keyGap) / 12;
-        int rem = KEY_AREA_W - fixed - 14 * g_keyGap - aw * 12;
-        int w[15]; w[0] = (int)(52 * dpiScale * scaleX);
-        for (int i = 1; i <= 10; i++) w[i] = aw + (i <= rem ? 1 : 0);
-        w[11] = aw; w[12] = aw; w[13] = (int)(55 * dpiScale * scaleX); w[14] = (int)(65 * dpiScale * scaleX);
-        short v[15] = {0x1B,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x30,0xBD,0xBB,0x2E,0x08};
-        KeyType t[15] = {K_SPECIAL, K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_SPECIAL,K_SPECIAL};
+        int wEsc = (int)(50 * dpiScale * scaleX);
+        int wBksp = (int)(68 * dpiScale * scaleX);
+        int fixed = wEsc + wBksp;
+        int aw = (KEY_AREA_W - fixed - 14 * g_keyGap) / 13;
+        int rem = KEY_AREA_W - fixed - 14 * g_keyGap - aw * 13;
+        int w[15]; w[0] = wEsc;
+        for (int i = 1; i <= 13; i++) w[i] = aw + (i <= rem ? 1 : 0);
+        w[14] = wBksp;
+        short v[15] = {0x1B,0xC0,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x30,0xBD,0xBB,0x08};
+        KeyType t[15] = {K_SPECIAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_NORMAL,K_SPECIAL};
         int x = KEY_AREA_X;
         for (int i = 0; i < 15; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
     }
     y += g_keyHeight + g_keyGap;
 
-    // Row 1: tab,q,w,e,r,t,y,u,i,o,p,[,],|
+    // Row 1: Tab, q-p, [, ], \, Del  (15 keys)
     {
-        int fixed = (int)(65 * dpiScale * scaleX);
-        int aw = (KEY_AREA_W - fixed - 13 * g_keyGap) / 13;
-        int rem = KEY_AREA_W - fixed - 13 * g_keyGap - aw * 13;
-        int w[14]; w[0] = (int)(65 * dpiScale * scaleX);
+        int wTab = (int)(68 * dpiScale * scaleX);
+        int wDel = (int)(68 * dpiScale * scaleX);
+        int fixed = wTab + wDel;
+        int aw = (KEY_AREA_W - fixed - 14 * g_keyGap) / 13;
+        int rem = KEY_AREA_W - fixed - 14 * g_keyGap - aw * 13;
+        int w[15]; w[0] = wTab;
         for (int i = 1; i <= 13; i++) w[i] = aw + (i <= rem ? 1 : 0);
-        short v[14] = {0x09,0x51,0x57,0x45,0x52,0x54,0x59,0x55,0x49,0x4F,0x50,0xDB,0xDD,0xDC};
-        KeyType t[14] = {K_SPECIAL, K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_NORMAL,K_NORMAL,K_NORMAL};
+        w[14] = wDel;
+        short v[15] = {0x09,0x51,0x57,0x45,0x52,0x54,0x59,0x55,0x49,0x4F,0x50,0xDB,0xDD,0xDC,0x2E};
+        KeyType t[15] = {K_SPECIAL,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_NORMAL,K_NORMAL,K_NORMAL,K_SPECIAL};
         int x = KEY_AREA_X;
-        for (int i = 0; i < 14; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
+        for (int i = 0; i < 15; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
     }
     y += g_keyHeight + g_keyGap;
 
-    // Row 2: caps,a,s,d,f,g,h,j,k,l,;,',enter
+    // Row 2: Caps, a-l, ;, ', Enter  (13 keys)
     {
-        int fixed = (int)((75 + 85) * dpiScale * scaleX);
+        int wCaps = (int)(80 * dpiScale * scaleX);
+        int wEnter = (int)(90 * dpiScale * scaleX);
+        int fixed = wCaps + wEnter;
         int aw = (KEY_AREA_W - fixed - 12 * g_keyGap) / 11;
         int rem = KEY_AREA_W - fixed - 12 * g_keyGap - aw * 11;
-        int w[13]; w[0] = (int)(75 * dpiScale * scaleX);
+        int w[13]; w[0] = wCaps;
         for (int i = 1; i <= 11; i++) w[i] = aw + (i <= rem ? 1 : 0);
-        w[12] = (int)(85 * dpiScale * scaleX);
+        w[12] = wEnter;
         short v[13] = {0x14,0x41,0x53,0x44,0x46,0x47,0x48,0x4A,0x4B,0x4C,0xBA,0xDE,0x0D};
-        KeyType t[13] = {K_CAPS, K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_NORMAL,K_NORMAL,K_SPECIAL};
+        KeyType t[13] = {K_CAPS,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_NORMAL,K_NORMAL,K_SPECIAL};
         int x = KEY_AREA_X;
         for (int i = 0; i < 13; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
     }
     y += g_keyHeight + g_keyGap;
 
-    // Row 3: 区分左 Shift (0xA0) 与 右 Shift (0xA1)
+    // Row 3: LShift, z-m, ,, ., /, ↑, RShift  (13 keys)
     {
-        int fixed = (int)((85 + 85) * dpiScale * scaleX);
-        int aw = (KEY_AREA_W - fixed - 11 * g_keyGap) / 10;
-        int rem = KEY_AREA_W - fixed - 11 * g_keyGap - aw * 10;
-        int w[12]; w[0] = (int)(85 * dpiScale * scaleX);
+        int wLSh = (int)(95 * dpiScale * scaleX);
+        int wRSh = (int)(70 * dpiScale * scaleX);
+        int wUp = (int)(52 * dpiScale * scaleX);
+        int fixed = wLSh + wRSh + wUp;
+        int aw = (KEY_AREA_W - fixed - 12 * g_keyGap) / 10;
+        int rem = KEY_AREA_W - fixed - 12 * g_keyGap - aw * 10;
+        int w[13]; w[0] = wLSh;
         for (int i = 1; i <= 10; i++) w[i] = aw + (i <= rem ? 1 : 0);
-        w[11] = (int)(85 * dpiScale * scaleX);
-        short v[12] = {0xA0, 0x5A,0x58,0x43,0x56,0x42,0x4E,0x4D,0xBC,0xBE,0xBF, 0xA1};
-        KeyType t[12] = {K_MOD, K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_NORMAL,K_NORMAL,K_NORMAL,K_MOD};
+        w[11] = wUp; w[12] = wRSh;
+        short v[13] = {0xA0,0x5A,0x58,0x43,0x56,0x42,0x4E,0x4D,0xBC,0xBE,0xBF,0x26,0xA1};
+        KeyType t[13] = {K_MOD,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_LETTER,K_NORMAL,K_NORMAL,K_NORMAL,K_ARROW,K_MOD};
         int x = KEY_AREA_X;
-        for (int i = 0; i < 12; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
+        for (int i = 0; i < 13; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
     }
     y += g_keyHeight + g_keyGap;
 
-    // Row 4: 标准全键盘底栏
+    // Row 4: Fn, Ctrl, Win, Alt, 空格, Alt, Ctrl, 英/简体, ←, ↓, →  (11 keys)
     {
-        int fixedWidths = (int)((65 + 55 + 50 + 50 + 45 + 45 + 45 + 45 + 50) * dpiScale * scaleX);
-        int totalGaps = 9 * g_keyGap;
-        int spaceW = KEY_AREA_W - fixedWidths - totalGaps;
-
-        int w[10] = {(int)(65 * dpiScale * scaleX), (int)(55 * dpiScale * scaleX), (int)(50 * dpiScale * scaleX), (int)(50 * dpiScale * scaleX), spaceW, 
-                    (int)(45 * dpiScale * scaleX), (int)(45 * dpiScale * scaleX), (int)(45 * dpiScale * scaleX), (int)(45 * dpiScale * scaleX), (int)(50 * dpiScale * scaleX)};
-        short v[10] = {0, 0x11, 0x5B, 0x12, 0x20, 0x25, 0x26, 0x28, 0x27, 0};
-        KeyType t[10] = {K_MODE123, K_MOD, K_SPECIAL, K_MOD, K_SPACE, K_ARROW, K_ARROW, K_ARROW, K_ARROW, K_HIDE};
-
+        int wFn  = (int)(50 * dpiScale * scaleX);
+        int wCtl = (int)(58 * dpiScale * scaleX);
+        int wWin = (int)(50 * dpiScale * scaleX);
+        int wAlt = (int)(58 * dpiScale * scaleX);
+        int wLang = (int)(68 * dpiScale * scaleX);
+        int wArw = (int)(52 * dpiScale * scaleX);
+        int fixed = wFn + wCtl + wWin + wAlt + wAlt + wCtl + wLang + wArw * 3;
+        int spaceW = KEY_AREA_W - fixed - 10 * g_keyGap;
+        if (spaceW < 60) spaceW = 60;
+        int w[11] = {wFn, wCtl, wWin, wAlt, spaceW, wAlt, wCtl, wLang, wArw, wArw, wArw};
+        short v[11] = {0, 0x11, 0x5B, 0x12, 0x20, 0x12, 0x11, 0, 0x25, 0x28, 0x27};
+        KeyType t[11] = {K_SPECIAL, K_MOD, K_SPECIAL, K_MOD, K_SPACE, K_MOD, K_MOD, K_LANG, K_ARROW, K_ARROW, K_ARROW};
         int x = KEY_AREA_X;
-        for (int i = 0; i < 10; i++) {
-            AddKey(x, y, w[i], g_keyHeight, v[i], t[i]);
-            x += w[i] + g_keyGap;
-        }
+        for (int i = 0; i < 11; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
     }
 }
 
 static void SwitchMode() {
     g_9key = !g_9key;
+    if (!g_9key) g_sym = FALSE;  // 全键盘无 &123 符号层，复位符号模式
     InitWindowSizeForDpi();
     RECT work = {0};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
@@ -494,10 +549,13 @@ static const wchar_t* KeyText(const KeyDef* k) {
         case 0x26: return L"\x2191";
         case 0x27: return L"\x2192";
         case 0x28: return L"\x2193";
+        case 0xC0: return L"\x60";
     }
+    if (k->type == K_LANG) return g_langCN ? L"\x7B80\x4F53" : L"\x82F1";
     if (k->type == K_MODE123) return g_sym ? L"abc" : L"&123";
     if (k->type == K_HIDE) return L"\x6536\x8D77";
     if (k->type == K_SPACE) return L"\x7A7A\x683C";
+    if (k->type == K_SPECIAL && k->vk == 0) return L"Fn";
     return L"";
 }
 
@@ -507,6 +565,7 @@ static BOOL IsActive(const KeyDef* k) {
     if (k->vk == 0x11 && g_ct && !g_shortPress) return TRUE;
     if (k->vk == 0x12 && g_al && !g_shortPress) return TRUE;
     if (k->type == K_MODE123 && g_sym) return TRUE;
+    if (k->type == K_LANG && g_langCN) return TRUE;
     return FALSE;
 }
 
@@ -673,6 +732,7 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
         g_sh = FALSE; g_ct = FALSE; g_al = FALSE;
         break;
     case K_SPECIAL:
+        if (k->vk == 0) break;  // Fn 键：占位，无动作
         SendKey(k->vk, g_sh, g_ct, g_al);
         if (k->vk != 0x14 && k->vk != 0x5B) { g_sh = FALSE; g_ct = FALSE; g_al = FALSE; }
         break;
@@ -703,6 +763,8 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
     case K_IME: SwitchMode(); break;
     case K_ARROW: SendKey(k->vk, FALSE, FALSE, FALSE); break;
     case K_SPACE: SendKey(0x20, FALSE, g_ct, g_al); g_ct = FALSE; g_al = FALSE; break;
+    case K_LANG: ToggleImeLang(); break;
+    case K_EMOJI: OpenEmojiPanel(); break;
     case K_HIDE: ShowKB(FALSE); break;
     default: break;
     }
@@ -1360,6 +1422,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
                 }
             }
         } else if (w == TIMER_FOCUS) {
+            // 周期性刷新中英文状态，保证语言键标签与实际输入法同步
+            if (g_vis) {
+                BOOL cn = DetectImeChinese();
+                if (cn != g_langCN) {
+                    g_langCN = cn;
+                    InvalidateRect(hWnd, 0, TRUE);
+                }
+            }
+
             if (!g_af || GetTickCount() - g_lht < 1000) return 0;
 
             HWND fg = GetForegroundWindow();

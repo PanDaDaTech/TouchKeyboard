@@ -99,9 +99,9 @@ jobs:
 
         rem Link (with YY-Thunks if available)
         if defined YY_OBJ (
-            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x86\touch_keyboard.obj" "build\x86\touch_keyboard.res" "%YY_OBJ%" /link /OUT:"dist\x86\UI_TouchKeyboard_x86.exe" /SUBSYSTEM:WINDOWS,5.01 /MANIFEST:NO /CETCOMPAT:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib
+            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x86\touch_keyboard.obj" "build\x86\touch_keyboard.res" "%YY_OBJ%" /link /OUT:"dist\x86\UI_TouchKeyboard_x86.exe" /SUBSYSTEM:WINDOWS,5.01 /MANIFEST:NO /CETCOMPAT:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib Imm32.lib
         ) else (
-            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x86\touch_keyboard.obj" "build\x86\touch_keyboard.res" /link /OUT:"dist\x86\UI_TouchKeyboard_x86.exe" /SUBSYSTEM:WINDOWS,5.01 /MANIFEST:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib
+            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x86\touch_keyboard.obj" "build\x86\touch_keyboard.res" /link /OUT:"dist\x86\UI_TouchKeyboard_x86.exe" /SUBSYSTEM:WINDOWS,5.01 /MANIFEST:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib Imm32.lib
         )
         if %errorlevel% neq 0 exit /b %errorlevel%
         echo [x86] Build succeeded.
@@ -153,9 +153,9 @@ jobs:
 
         rem Link (with YY-Thunks if available)
         if defined YY_OBJ (
-            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x64\touch_keyboard.obj" "build\x64\touch_keyboard.res" "%YY_OBJ%" /link /OUT:"dist\x64\UI_TouchKeyboard_x64.exe" /SUBSYSTEM:WINDOWS,5.02 /MANIFEST:NO /CETCOMPAT:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib
+            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x64\touch_keyboard.obj" "build\x64\touch_keyboard.res" "%YY_OBJ%" /link /OUT:"dist\x64\UI_TouchKeyboard_x64.exe" /SUBSYSTEM:WINDOWS,5.02 /MANIFEST:NO /CETCOMPAT:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib Imm32.lib
         ) else (
-            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x64\touch_keyboard.obj" "build\x64\touch_keyboard.res" /link /OUT:"dist\x64\UI_TouchKeyboard_x64.exe" /SUBSYSTEM:WINDOWS,5.02 /MANIFEST:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib
+            cl /nologo /utf-8 /O2 /MT /D_HAS_EXCEPTIONS=0 /GR- /d2FH4- "build\x64\touch_keyboard.obj" "build\x64\touch_keyboard.res" /link /OUT:"dist\x64\UI_TouchKeyboard_x64.exe" /SUBSYSTEM:WINDOWS,5.02 /MANIFEST:NO Comctl32.lib Shell32.lib Gdi32.lib User32.lib Advapi32.lib Imm32.lib
         )
         if %errorlevel% neq 0 exit /b %errorlevel%
         echo [x64] Build succeeded.
