@@ -28,7 +28,6 @@ int g_keyHeight = 46;
 #define TIMER_FOCUS     8820
 #define TIMER_EXIT      8822
 #define TIMER_SLIDE     8823
-#define TIMER_LONGPRESS 8825
 #define TIMER_REPEAT    8826
 #define WM_TRAY         (WM_APP + 100)
 #define WM_FOCUS_EVENT  (WM_APP + 101)
@@ -39,7 +38,6 @@ int g_keyHeight = 46;
 
 #define ID_MENU_TOGGLE 10001
 #define ID_MENU_AUTO   10002
-#define ID_MENU_MODE   10003
 #define ID_MENU_THEME  10004
 #define ID_MENU_ABOUT  10008
 #define ID_MENU_EXIT   10009
@@ -55,10 +53,6 @@ struct ThemeColors {
     DWORD hot;
     DWORD text;
     DWORD dim;
-    DWORD subtext;
-    DWORD bubbleBg;
-    DWORD bubbleItem;
-    DWORD bubbleBorder;
 };
 
 // Win11 Dark Theme (BGR format for GDI)
@@ -71,11 +65,7 @@ static const ThemeColors g_darkTheme = {
     0x383838,  // hover
     0xD47800,  // hot (Win11 accent blue #0078D4 in BGR)
     0xF5F5F5,  // text
-    0xA0A0A0,  // dim
-    0xFFB040,  // subtext (cyan-blue #40B0FF in BGR)
-    0x2B2B2B,  // bubbleBg
-    0x333333,  // bubbleItem
-    0x555555   // bubbleBorder
+    0xA0A0A0   // dim
 };
 
 // Win11 Light Theme (BGR format for GDI)
@@ -88,11 +78,7 @@ static const ThemeColors g_lightTheme = {
     0xF0F0F0,  // hover
     0xD47800,  // hot (Win11 accent blue #0078D4 in BGR)
     0x1A1A1A,  // text
-    0x666666,  // dim
-    0xCC7700,  // subtext (darker cyan for light bg)
-    0xF5F5F5,  // bubbleBg
-    0xFFFFFF,  // bubbleItem
-    0xCCCCCC   // bubbleBorder
+    0x666666   // dim
 };
 
 // Theme mode: 0 = follow system, 1 = force dark, 2 = force light
@@ -131,32 +117,18 @@ static void ApplyTheme() {
 #define C_HOT          (g_theme->hot)
 #define C_WHITE        (g_theme->text)
 #define C_DIM          (g_theme->dim)
-#define C_SUBTEXT      (g_theme->subtext)
-#define C_BUBBLE_BG    (g_theme->bubbleBg)
-#define C_BUBBLE_ITEM  (g_theme->bubbleItem)
-#define C_BUBBLE_BORDER (g_theme->bubbleBorder)
 
 enum KeyType {
-    K_NORMAL, K_LETTER, K_MOD, K_CAPS, K_IME, K_MODE123,
-    K_SPECIAL, K_ARROW, K_SPACE, K_HIDE, K_DOCK, K_MIN, K_CLOSE, K_9KEY,
-    K_LANG, K_EMOJI
+    K_NORMAL, K_LETTER, K_MOD, K_CAPS,
+    K_SPECIAL, K_ARROW, K_SPACE, K_HIDE, K_DOCK, K_MIN, K_CLOSE,
+    K_LANG
 };
 
 struct KeyDef { int x, y, w, h; short vk; KeyType type; };
 
-struct PopupBubble {
-    BOOL active;
-    int keyIdx;
-    int selIdx;
-    int cx, cy;
-    wchar_t chars[5];
-    int count;
-};
-
 // C++ 函数前置声明
 static void ShowKB(BOOL show, BOOL isManual = FALSE);
 static void ToggleKB();
-static void SwitchMode();
 static void PromptCloseAction(HWND hWnd);
 static void RecreateFontsAndLayout();
 static double GetSystemDpiScale();
@@ -170,8 +142,7 @@ HICON       g_hTrayIcon = 0;
 BOOL        g_vis = FALSE;
 BOOL        g_manualShow = FALSE;
 BOOL        g_sh = FALSE, g_ct = FALSE, g_al = FALSE, g_cp = FALSE;
-BOOL        g_sym = FALSE, g_af = TRUE;
-BOOL        g_shortPress = FALSE;
+BOOL        g_af = TRUE;
 DWORD       g_lht = 0;
 int         g_hk = -1, g_pk = -1;
 int         g_repeatKeyIdx = -1;
@@ -185,10 +156,6 @@ HANDLE      g_mutex = 0;
 HFONT       g_f12 = 0, g_f13b = 0, g_f14 = 0, g_f14b = 0, g_f16b = 0, g_f18b = 0;
 NOTIFYICONDATAA g_nid;
 
-// 9-key state
-BOOL        g_9key = FALSE;
-PopupBubble g_bubble = {0};
-
 // IME 中英文状态：FALSE=英文(英), TRUE=中文(中)
 BOOL        g_langCN = FALSE;
 
@@ -198,16 +165,6 @@ BOOL        g_fnLayer = FALSE;
 #define MAX_KEYS 120
 KeyDef g_keys[MAX_KEYS];
 int g_nk = 0;
-
-static const wchar_t* g_symText[26] = {
-    L"1",L"2",L"3",L"4",L"5",L"6",L"7",L"8",L"9",L"0",
-    L"@",L"#",L"$",L"%",L"&",L"-",L"+",L"(",L")",
-    L"*",L"\"",L":",L";",L"!",L"?",L"~"
-};
-
-static const wchar_t* g_9keyChars[10] = {
-    L"0+-_", L"1.,?!", L"abc2", L"def3", L"ghi4", L"jkl5", L"mno6", L"pqrs7", L"tuv8", L"wxyz9"
-};
 
 static double GetSystemDpiScale() {
     HDC hdc = GetDC(NULL);
@@ -219,13 +176,8 @@ static double GetSystemDpiScale() {
 
 static void InitWindowSizeForDpi() {
     double dpiScale = GetSystemDpiScale();
-    if (g_9key) {
-        g_ww = (int)(420.0 * dpiScale);
-        g_wh = (int)(360.0 * dpiScale);
-    } else {
-        g_ww = (int)(980.0 * dpiScale);
-        g_wh = (int)(320.0 * dpiScale);
-    }
+    g_ww = (int)(980.0 * dpiScale);
+    g_wh = (int)(320.0 * dpiScale);
 }
 
 static int AddKey(int x, int y, int w, int h, short vk, KeyType type) {
@@ -235,101 +187,9 @@ static int AddKey(int x, int y, int w, int h, short vk, KeyType type) {
     return g_nk;
 }
 
-static void Build9Keys() {
-    g_nk = 0;
-    double dpiScale = GetSystemDpiScale();
-    double baseH = 360.0 * dpiScale;
-    double baseW = 420.0 * dpiScale;
-
-    double scaleY = (double)g_wh / baseH;
-    double scaleX = (double)g_ww / baseW;
-
-    g_headerH = (int)(36.0 * dpiScale * scaleY); if (g_headerH < 28) g_headerH = 28;
-    g_keyGap = (int)(4.0 * dpiScale * scaleX); if (g_keyGap < 2) g_keyGap = 2;
-
-    int topPad = (int)(18.0 * dpiScale * scaleY);
-    int y = g_headerH + topPad;
-    int cols = 4;
-    int cw = (KEY_AREA_W - (cols - 1) * g_keyGap) / cols;
-    int rem = KEY_AREA_W - (cols - 1) * g_keyGap - cw * cols;
-    int kh = (g_wh - g_headerH - topPad - 6 - 4 * g_keyGap) / 4;
-    if (kh < 25) kh = 25;
-
-    int w[4];
-    for (int i = 0; i < cols; i++) w[i] = cw + (i < rem ? 1 : 0);
-
-    // Row 0: 1, 2, 3, Backspace
-    short v0[4] = {0x31, 0x32, 0x33, 0x08};
-    KeyType t0[4] = {K_9KEY, K_9KEY, K_9KEY, K_SPECIAL};
-    int x = KEY_AREA_X;
-    for (int i = 0; i < 4; i++) { AddKey(x, y, w[i], kh, v0[i], t0[i]); x += w[i] + g_keyGap; }
-    y += kh + g_keyGap;
-
-    // Row 1: 4, 5, 6, Enter
-    short v1[4] = {0x34, 0x35, 0x36, 0x0D};
-    KeyType t1[4] = {K_9KEY, K_9KEY, K_9KEY, K_SPECIAL};
-    x = KEY_AREA_X;
-    for (int i = 0; i < 4; i++) { AddKey(x, y, w[i], kh, v1[i], t1[i]); x += w[i] + g_keyGap; }
-    y += kh + g_keyGap;
-
-    // Row 2: 7, 8, 9, Tab
-    short v2[4] = {0x37, 0x38, 0x39, 0x09};
-    KeyType t2[4] = {K_9KEY, K_9KEY, K_9KEY, K_SPECIAL};
-    x = KEY_AREA_X;
-    for (int i = 0; i < 4; i++) { AddKey(x, y, w[i], kh, v2[i], t2[i]); x += w[i] + g_keyGap; }
-    y += kh + g_keyGap;
-
-    // Row 3: &123, 0, 空格, Shift
-    short v3[4] = {0, 0x30, 0x20, 0x10};
-    KeyType t3[4] = {K_MODE123, K_9KEY, K_SPACE, K_MOD};
-    x = KEY_AREA_X;
-    for (int i = 0; i < 4; i++) { AddKey(x, y, w[i], kh, v3[i], t3[i]); x += w[i] + g_keyGap; }
-}
-
-// ========== IME 中英文状态检测与切换 ==========
-// 通过 ImmGetConversionStatus 读取焦点控件的输入法转换模式
-static BOOL DetectImeChinese() {
-    HWND fg = GetForegroundWindow();
-    if (!fg || fg == g_hWnd) return g_langCN;
-    DWORD tid = GetWindowThreadProcessId(fg, NULL);
-    // 优先取实际焦点控件（IME 上下文通常挂在聚焦的子控件上，如 Chrome/QQ 的输入区）
-    HWND target = fg;
-    GUITHREADINFO gi;
-    memset(&gi, 0, sizeof(gi));
-    gi.cbSize = sizeof(gi);
-    if (GetGUIThreadInfo(tid, &gi) && gi.hwndFocus) target = gi.hwndFocus;
-    HIMC himc = ImmGetContext(target);
-    if (!himc) return g_langCN;
-    DWORD conv = 0, sent = 0;
-    BOOL ok = ImmGetConversionStatus(himc, &conv, &sent);
-    ImmReleaseContext(target, himc);
-    if (!ok) return g_langCN;
-    // 中文输入法处于 native/中文转换模式即视为中文状态
-    return (conv & IME_CMODE_NATIVE) != 0;
-}
-
-// 切换中英文：发送右 Shift 脉冲（微软拼音/搜狗默认中英切换键）
-static void ToggleImeLang() {
-    SendKey(VK_RSHIFT, FALSE, FALSE, FALSE);
-    Sleep(60);
-    g_langCN = DetectImeChinese();
-    if (g_hWnd) InvalidateRect(g_hWnd, 0, TRUE);
-}
-
-// 打开 Win10/11 表情面板 (Win + .)
-static void OpenEmojiPanel() {
-    INPUT inputs[4] = {};
-    inputs[0].type = INPUT_KEYBOARD; inputs[0].ki.wVk = VK_LWIN;
-    inputs[1].type = INPUT_KEYBOARD; inputs[1].ki.wVk = VK_OEM_PERIOD;
-    inputs[2].type = INPUT_KEYBOARD; inputs[2].ki.wVk = VK_OEM_PERIOD; inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs[3].type = INPUT_KEYBOARD; inputs[3].ki.wVk = VK_LWIN; inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(4, inputs, sizeof(INPUT));
-}
-
 static void BuildKeys() {
-    if (g_9key) { Build9Keys(); return; }
     g_nk = 0;
-    
+
     double dpiScale = GetSystemDpiScale();
     double baseW = 980.0 * dpiScale;
     double baseH = 320.0 * dpiScale;
@@ -433,20 +293,6 @@ static void BuildKeys() {
     }
 }
 
-static void SwitchMode() {
-    g_9key = !g_9key;
-    if (!g_9key) g_sym = FALSE;  // 全键盘无 &123 符号层，复位符号模式
-    g_fnLayer = FALSE;           // 复位 Fn 功能键层
-    InitWindowSizeForDpi();
-    RECT work = {0};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    int sx = work.left + ((work.right - work.left) - g_ww) / 2;
-    int sy = work.bottom - g_wh - 6;
-    SetWindowPos(g_hWnd, HWND_TOPMOST, sx, sy, g_ww, g_wh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    RecreateFontsAndLayout();
-    InvalidateRect(g_hWnd, 0, TRUE);
-}
-
 static HFONT MakeFont(int size, BOOL bold) {
     HDC hdc = GetDC(0);
     int h = -MulDiv(size, 96, 72);
@@ -466,7 +312,7 @@ static void RecreateFontsAndLayout() {
     if (g_f18b) DeleteObject(g_f18b);
 
     double dpiScale = GetSystemDpiScale();
-    double baseH = g_9key ? (360.0 * dpiScale) : (320.0 * dpiScale);
+    double baseH = 320.0 * dpiScale;
     double scaleY = (double)g_wh / baseH;
     if (scaleY < 0.4) scaleY = 0.4;
 
@@ -531,11 +377,6 @@ static int FnMap(short vk) {
 }
 
 static const wchar_t* LetterKeyText(short vk) {
-    if (g_sym) {
-        int idx = (vk >= 0x41 && vk <= 0x5A) ? (vk - 0x41) : 0;
-        if (idx < 26) return g_symText[idx];
-        return L"?";
-    }
     BOOL upper = g_cp;
     if (g_sh) upper = !upper;
     static wchar_t buf[2];
@@ -576,7 +417,7 @@ static const wchar_t* KeyText(const KeyDef* k) {
         case 0xC0: return L"\x60";
     }
     if (k->type == K_LANG) return g_langCN ? L"\x4E2D" : L"\x82F1";
-    if (k->type == K_MODE123) return g_sym ? L"abc" : L"&123";
+
     if (k->type == K_HIDE) return L"\x6536\x8D77";
     if (k->type == K_SPACE) return L"\x7A7A\x683C";
     if (k->type == K_SPECIAL && k->vk == 0) return L"Fn";
@@ -585,10 +426,9 @@ static const wchar_t* KeyText(const KeyDef* k) {
 
 static BOOL IsActive(const KeyDef* k) {
     if (k->vk == 0x14 && g_cp) return TRUE;
-    if ((k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) && g_sh && !g_shortPress) return TRUE;
-    if (k->vk == 0x11 && g_ct && !g_shortPress) return TRUE;
-    if (k->vk == 0x12 && g_al && !g_shortPress) return TRUE;
-    if (k->type == K_MODE123 && g_sym) return TRUE;
+    if ((k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) && g_sh) return TRUE;
+    if (k->vk == 0x11 && g_ct) return TRUE;
+    if (k->vk == 0x12 && g_al) return TRUE;
     if (k->type == K_LANG && g_langCN) return TRUE;
     if (k->type == K_SPECIAL && k->vk == 0 && g_fnLayer) return TRUE;
     return FALSE;
@@ -672,80 +512,41 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
     SendInput(count, inputs, sizeof(INPUT));
 }
 
-// SendChar 仅用于不需要 IME 组合的纯 Unicode 字符（如九宫格选字中的标点符号）
-// 修复 #1/#3/#4: 字母和数字不再走此路径，改为通过 SendKey(VK) 发送
-static void SendChar(wchar_t ch) {
-    INPUT in[2] = {};
-    in[0].type = INPUT_KEYBOARD;
-    in[0].ki.wScan = ch;
-    in[0].ki.dwFlags = KEYEVENTF_UNICODE;
-    in[1].type = INPUT_KEYBOARD;
-    in[1].ki.wScan = ch;
-    in[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-    SendInput(2, in, sizeof(INPUT));
+// ========== IME 中英文状态检测与切换 ==========
+// 通过 ImmGetConversionStatus 读取焦点控件的输入法转换模式
+static BOOL DetectImeChinese() {
+    HWND fg = GetForegroundWindow();
+    if (!fg || fg == g_hWnd) return g_langCN;
+    DWORD tid = GetWindowThreadProcessId(fg, NULL);
+    HWND target = fg;
+    GUITHREADINFO gi;
+    memset(&gi, 0, sizeof(gi));
+    gi.cbSize = sizeof(gi);
+    if (GetGUIThreadInfo(tid, &gi) && gi.hwndFocus) target = gi.hwndFocus;
+    HIMC himc = ImmGetContext(target);
+    if (!himc) return g_langCN;
+    DWORD conv = 0, sent = 0;
+    BOOL ok = ImmGetConversionStatus(himc, &conv, &sent);
+    ImmReleaseContext(target, himc);
+    if (!ok) return g_langCN;
+    return (conv & IME_CMODE_NATIVE) != 0;
 }
 
-// 将字符映射为虚拟键码 + Shift 状态，通过 SendKey 发送以经过 IME/TSF 管线
-// 修复 #3: 符号模式下字母键通过 VK 发送
-// 修复 #4: 九宫格模式字母/数字通过 VK 发送
-static void SendCharViaVK(wchar_t ch) {
-    BYTE vk = 0;
-    BOOL needShift = FALSE;
-
-    if (ch >= L'a' && ch <= L'z') {
-        vk = (BYTE)(ch - L'a' + 'A');  // VK_A ~ VK_Z
-    } else if (ch >= L'A' && ch <= L'Z') {
-        vk = (BYTE)ch;
-        needShift = TRUE;
-    } else if (ch >= L'0' && ch <= L'9') {
-        vk = (BYTE)ch;  // VK_0 ~ VK_9 (0x30~0x39)
-    } else {
-        // 标点符号映射到对应物理键位
-        switch (ch) {
-            case L'!': vk = 0x31; needShift = TRUE; break;
-            case L'@': vk = 0x32; needShift = TRUE; break;
-            case L'#': vk = 0x33; needShift = TRUE; break;
-            case L'$': vk = 0x34; needShift = TRUE; break;
-            case L'%': vk = 0x35; needShift = TRUE; break;
-            case L'^': vk = 0x36; needShift = TRUE; break;
-            case L'&': vk = 0x37; needShift = TRUE; break;
-            case L'*': vk = 0x38; needShift = TRUE; break;
-            case L'(': vk = 0x39; needShift = TRUE; break;
-            case L')': vk = 0x30; needShift = TRUE; break;
-            case L'-': case L'_': vk = 0xBD; needShift = (ch == L'_'); break;
-            case L'=': case L'+': vk = 0xBB; needShift = (ch == L'+'); break;
-            case L'[': case L'{': vk = 0xDB; needShift = (ch == L'{'); break;
-            case L']': case L'}': vk = 0xDD; needShift = (ch == L'}'); break;
-            case L'\\': case L'|': vk = 0xDC; needShift = (ch == L'|'); break;
-            case L';': case L':': vk = 0xBA; needShift = (ch == L':'); break;
-            case L'\'': case L'"': vk = 0xDE; needShift = (ch == L'"'); break;
-            case L',': case L'<': vk = 0xBC; needShift = (ch == L'<'); break;
-            case L'.': case L'>': vk = 0xBE; needShift = (ch == L'>'); break;
-            case L'/': case L'?': vk = 0xBF; needShift = (ch == L'?'); break;
-            case L'~': vk = 0xC0; needShift = TRUE; break;
-            case L'`': vk = 0xC0; needShift = FALSE; break;
-            case L' ': vk = VK_SPACE; break;
-            default:
-                // 无法映射的字符（如中文等），回退到 KEYEVENTF_UNICODE
-                SendChar(ch);
-                return;
-        }
-    }
-
-    SendKey(vk, needShift, FALSE, FALSE);
+// 切换中英文：发送右 Shift 脉冲（微软拼音/搜狗默认中英切换键）
+static void ToggleImeLang() {
+    SendKey(VK_RSHIFT, FALSE, FALSE, FALSE);
+    Sleep(60);
+    g_langCN = DetectImeChinese();
+    if (g_hWnd) InvalidateRect(g_hWnd, 0, TRUE);
 }
 
-static void DoKeyAction(const KeyDef* k, BOOL isDown) {
+static void DoKeyAction(const KeyDef* k) {
     if (!k) return;
     switch (k->type) {
     case K_LETTER:
         if (g_ct || g_al) {
             SendKey(k->vk, g_sh, g_ct, g_al);
             g_ct = FALSE; g_al = FALSE; g_sh = FALSE;
-        } else if (g_sym) {
-            // 修复 #3: 符号模式下通过 VK 发送，让 IME 可拦截
-            int idx = (k->vk >= 0x41 && k->vk <= 0x5A) ? k->vk - 0x41 : 0;
-            SendCharViaVK(g_symText[idx][0]);
         } else {
             BOOL us = g_sh ? !(GetKeyState(VK_CAPITAL) & 1) : FALSE;
             SendKey(k->vk, us, FALSE, FALSE);
@@ -768,7 +569,7 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
     case K_SPECIAL:
         if (k->vk == 0) {  // Fn 键：切换 F1~F12 功能层
             g_fnLayer = !g_fnLayer;
-            if (g_fnLayer) g_sh = FALSE;  // 与 Shift 符号层互斥
+            if (g_fnLayer) g_sh = FALSE;
             InvalidateRect(g_hWnd, 0, TRUE);
             break;
         }
@@ -776,131 +577,54 @@ static void DoKeyAction(const KeyDef* k, BOOL isDown) {
         if (k->vk != 0x14 && k->vk != 0x5B) { g_sh = FALSE; g_ct = FALSE; g_al = FALSE; }
         break;
     case K_MOD:
-        if (g_shortPress) {
-            SendKey(k->vk, FALSE, FALSE, FALSE);
-            if (k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) g_sh = FALSE;
-            if (k->vk == 0x11) g_ct = FALSE;
-            if (k->vk == 0x12) g_al = FALSE;
-        } else {
-            if (k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) {
-                g_sh = !g_sh;
-                if (g_sh) g_fnLayer = FALSE;  // Shift 符号层与 Fn 层互斥
-            }
-            else if (k->vk == 0x11) g_ct = !g_ct;
-            else if (k->vk == 0x12) g_al = !g_al;
+        if (k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) {
+            g_sh = !g_sh;
+            if (g_sh) g_fnLayer = FALSE;
+        } else if (k->vk == 0x11) {
+            g_ct = !g_ct;
+        } else if (k->vk == 0x12) {
+            g_al = !g_al;
         }
         break;
     case K_CAPS:
         SendKey(0x14, FALSE, FALSE, FALSE);
         g_cp = (GetKeyState(VK_CAPITAL) & 1) != 0;
         break;
-    case K_9KEY:
-        if (!isDown) {
-            // 修复 #4: 九宫格模式通过 VK 发送字母/数字，经过 IME 组合管线
-            int d = (k->vk >= 0x30 && k->vk <= 0x39) ? (k->vk - 0x30) : 0;
-            SendCharViaVK(g_9keyChars[d][0]);
-        }
-        break;
-    case K_MODE123: g_sym = !g_sym; break;
-    case K_IME: SwitchMode(); break;
     case K_ARROW: SendKey(k->vk, FALSE, FALSE, FALSE); break;
     case K_SPACE: SendKey(0x20, FALSE, g_ct, g_al); g_ct = FALSE; g_al = FALSE; break;
     case K_LANG: ToggleImeLang(); break;
-    case K_EMOJI: OpenEmojiPanel(); break;
     case K_HIDE: ShowKB(FALSE); break;
     default: break;
     }
 }
-
-// 触摸屏专属：仅九宫格模式触发四周环绕选字
-static void TriggerLongPressBubble(int keyIdx) {
-    if (!g_9key) return;
-    if (keyIdx < 0 || keyIdx >= g_nk) return;
-    const KeyDef* k = &g_keys[keyIdx];
-    if (k->type != K_9KEY) return;
-
-    g_bubble.keyIdx = keyIdx;
-    g_bubble.count = 5;
-    g_bubble.selIdx = 0;
-    g_bubble.cx = k->x + k->w / 2;
-    g_bubble.cy = k->y + k->h / 2;
-
-    double dpiScale = GetSystemDpiScale();
-    int itemW = (int)(56 * dpiScale), itemH = (int)(56 * dpiScale);
-    int R = (int)(62 * dpiScale);
-
-    int minCx = itemW / 2 + R + 6;
-    int maxCx = g_ww - (itemW / 2 + R + 6);
-    int minCy = g_headerH + itemH / 2 + R + 4;
-    int maxCy = g_wh - (itemH / 2 + R + 4);
-
-    if (g_bubble.cx < minCx) g_bubble.cx = minCx;
-    if (g_bubble.cx > maxCx) g_bubble.cx = maxCx;
-    if (g_bubble.cy < minCy) g_bubble.cy = minCy;
-    if (g_bubble.cy > maxCy) g_bubble.cy = maxCy;
-
-    memset(g_bubble.chars, 0, sizeof(g_bubble.chars));
-
-    int d = (k->vk >= 0x30 && k->vk <= 0x39) ? (k->vk - 0x30) : 0;
-    const wchar_t* set = g_9keyChars[d];
-    if (d == 1) { // 1.,?!
-        g_bubble.chars[0] = L'1'; g_bubble.chars[1] = L'.';
-        g_bubble.chars[2] = L','; g_bubble.chars[3] = L'?'; g_bubble.chars[4] = L'!';
-    } else if (d == 0) { // 0+-_
-        g_bubble.chars[0] = L'0'; g_bubble.chars[1] = L'+';
-        g_bubble.chars[2] = L'-'; g_bubble.chars[3] = L'_'; g_bubble.chars[4] = L'0';
-    } else {
-        int len = (int)wcslen(set);
-        g_bubble.chars[0] = set[0];
-        g_bubble.chars[1] = set[0];
-        g_bubble.chars[2] = (len > 1) ? set[1] : set[0];
-        g_bubble.chars[3] = (len > 2) ? set[2] : set[0];
-        g_bubble.chars[4] = (len > 3) ? set[3] : set[0];
-    }
-
-    g_bubble.active = TRUE;
-    InvalidateRect(g_hWnd, 0, TRUE);
-}
-
 // ========== Header Layout & Dynamic DPI Positioning ==========
 #define HDR_DOCK  1000
-#define HDR_IME   1001
 #define HDR_AUTO  1002
 #define HDR_MIN   1003
 #define HDR_CLOSE 1004
-#define HDR_SHORT 1005
 
 static int HitHeader(int x, int y) {
     if (y < 0 || y >= g_headerH) return -1;
 
     double dpiScale = GetSystemDpiScale();
-    double baseW = g_9key ? (420.0 * dpiScale) : (980.0 * dpiScale);
-    double scaleX = (double)g_ww / baseW;
+    double scaleX = (double)g_ww / (980.0 * dpiScale);
 
     int rMargin = (int)(6 * dpiScale * scaleX);
     int gap     = (int)(6 * dpiScale * scaleX);
-
     int wClose = (int)(36 * dpiScale * scaleX);
     int wMin   = (int)(36 * dpiScale * scaleX);
     int wAuto  = (int)(96 * dpiScale * scaleX);
-    int wMode  = (int)(76 * dpiScale * scaleX);
-    int wShort = (int)(66 * dpiScale * scaleX);
     int wMenu  = (int)(48 * dpiScale * scaleX);
 
     int xClose = g_ww - rMargin - wClose;
     int xMin   = xClose - gap - wMin;
     int xAuto  = xMin - gap - wAuto;
-    int xMode  = xAuto - gap - wMode;
-    int xShort = xMode - gap - wShort;
     int xMenu  = (int)(6 * dpiScale * scaleX);
 
     if (x >= xClose && x < g_ww) return HDR_CLOSE;
     if (x >= xMin && x < xClose) return HDR_MIN;
     if (x >= xAuto && x < xMin) return HDR_AUTO;
-    if (x >= xMode && x < xAuto) return HDR_IME;
-    if (x >= xShort && x < xMode) return HDR_SHORT;
     if (x >= xMenu && x < xMenu + wMenu + gap) return HDR_DOCK;
-
     return -1;
 }
 
@@ -908,57 +632,38 @@ static void DrawHeader(HDC dc) {
     Fill(dc, 0, 0, g_ww, g_headerH, C_HDR);
 
     double dpiScale = GetSystemDpiScale();
-    double baseW = g_9key ? (420.0 * dpiScale) : (980.0 * dpiScale);
-    double scaleX = (double)g_ww / baseW;
-    double scaleY = (double)g_wh / (g_9key ? (360.0 * dpiScale) : (320.0 * dpiScale));
+    double scaleX = (double)g_ww / (980.0 * dpiScale);
+    double scaleY = (double)g_wh / (320.0 * dpiScale);
 
     int rMargin = (int)(6 * dpiScale * scaleX);
     int gap     = (int)(6 * dpiScale * scaleX);
     int btnH    = g_headerH - (int)(12 * dpiScale * scaleY);
     if (btnH < 22) btnH = 22;
-    int btnY    = (g_headerH - btnH) / 2;
+    int btnY = (g_headerH - btnH) / 2;
 
     int wClose = (int)(36 * dpiScale * scaleX);
     int wMin   = (int)(36 * dpiScale * scaleX);
     int wAuto  = (int)(96 * dpiScale * scaleX);
-    int wMode  = (int)(76 * dpiScale * scaleX);
-    int wShort = (int)(66 * dpiScale * scaleX);
     int wMenu  = (int)(48 * dpiScale * scaleX);
 
     int xClose = g_ww - rMargin - wClose;
     int xMin   = xClose - gap - wMin;
     int xAuto  = xMin - gap - wAuto;
-    int xMode  = xAuto - gap - wMode;
-    int xShort = xMode - gap - wShort;
     int xMenu  = (int)(6 * dpiScale * scaleX);
 
-    // 左侧：实体 [ 菜单 ] 胶囊按钮
     DrawRoundRect(dc, xMenu, btnY, wMenu, btnH, C_KEY, C_KEY_BORDER, btnH / 2);
     DrawTextC(dc, xMenu, btnY, wMenu, btnH, L"\x83DC\x5355", g_f12, C_WHITE);
 
-    // 标题
     int xTitle = xMenu + wMenu + gap;
-    int wTitle = xShort - xTitle - gap;
+    int wTitle = xAuto - xTitle - gap;
     if (wTitle > 40) {
         DrawTextC(dc, xTitle, 0, wTitle, g_headerH, L"", g_f12, C_DIM);
     }
 
-    // 右侧：短按开关
-    DWORD shortBg = g_shortPress ? C_HOT : C_KEY;
-    DrawRoundRect(dc, xShort, btnY, wShort, btnH, shortBg, C_KEY_BORDER, btnH / 2);
-    DrawTextC(dc, xShort, btnY, wShort, btnH, g_shortPress ? L"\x77ED\x6309:\x5F00" : L"\x77ED\x6309:\x5173", g_f12, C_WHITE);
-
-    // 模式切换胶囊按钮
-    DWORD modeBg = g_9key ? C_HOT : C_KEY;
-    DrawRoundRect(dc, xMode, btnY, wMode, btnH, modeBg, C_KEY_BORDER, btnH / 2);
-    DrawTextC(dc, xMode, btnY, wMode, btnH, g_9key ? L"\x5168\x952E\x76D8" : L"\x4E5D\x5BAB\x683C", g_f12, C_WHITE);
-
-    // 自动呼出胶囊按钮
     DWORD autoBg = g_af ? C_HOT : C_KEY;
     DrawRoundRect(dc, xAuto, btnY, wAuto, btnH, autoBg, C_KEY_BORDER, 12);
     DrawTextC(dc, xAuto, btnY, wAuto, btnH, g_af ? L"\x81EA\x52A8\x547C\x51FA:\x5F00" : L"\x81EA\x52A8\x547C\x51FA:\x5173", g_f12, C_WHITE);
 
-    // 最小化与关闭按钮
     DrawTextC(dc, xMin, 0, wMin, g_headerH, L"\x229F", g_f14b, C_DIM);
     DrawTextC(dc, xClose, 0, wClose, g_headerH, L"\x2715", g_f12, C_DIM);
 }
@@ -974,65 +679,23 @@ static void DrawKeys(HDC dc) {
         if (active || pressed) bg = C_HOT;
         else if (hover) bg = C_HOVER;
         else {
-            int dt[] = {K_SPECIAL, K_CAPS, K_MOD, K_ARROW, K_HIDE, K_MODE123};
-            for (size_t j = 0; j < sizeof(dt)/sizeof(dt[0]); j++)
+            int dt[] = {K_SPECIAL, K_CAPS, K_MOD, K_ARROW, K_HIDE};
+            for (size_t j = 0; j < sizeof(dt)/sizeof(dt[0]); j++) {
                 if (k->type == dt[j]) { bg = C_DARK; break; }
+            }
         }
 
         DrawRoundRect(dc, k->x, k->y, k->w, k->h, bg, C_KEY_BORDER, 8);
 
-        if (k->type == K_9KEY) {
-            int d = (k->vk >= 0x30 && k->vk <= 0x39) ? (k->vk - 0x30) : 0;
-            wchar_t digit[2] = {(wchar_t)(L'0' + d), 0};
-            
-            RECT rd = {k->x, k->y + 4, k->x + k->w, k->y + (int)(30 * GetSystemDpiScale())};
-            SelectObject(dc, g_f18b);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, C_WHITE);
-            DrawTextW(dc, digit, -1, &rd, DT_CENTER | DT_SINGLELINE);
-
-            RECT rl = {k->x, k->y + (int)(32 * GetSystemDpiScale()), k->x + k->w, k->y + k->h - 4};
-            SelectObject(dc, g_f12);
-            SetTextColor(dc, C_SUBTEXT);
-            DrawTextW(dc, g_9keyChars[d], -1, &rl, DT_CENTER | DT_SINGLELINE);
-        } else {
-            const wchar_t* txt = KeyText(k);
-            HFONT f = g_f14b;
-            if (k->type == K_HIDE || k->type == K_ARROW) f = g_f14b;
-            if (k->vk == 0x08) f = g_f18b;
-            if (k->vk == 0x0D) f = g_f13b;
-            if (k->vk == 0x20 || k->type == K_SPACE) f = g_f14b;
-            DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, C_WHITE);
-        }
-    }
-
-    if (g_bubble.active && g_bubble.count > 0) {
-        double dpiScale = GetSystemDpiScale();
-        int itemW = (int)(56 * dpiScale), itemH = (int)(56 * dpiScale);
-        int R = (int)(62 * dpiScale);
-
-        struct Pos { int x, y; } pos[5] = {
-            {g_bubble.cx - itemW/2, g_bubble.cy - itemH/2},     // 0: 中
-            {g_bubble.cx - itemW/2, g_bubble.cy - itemH/2 - R}, // 1: 上
-            {g_bubble.cx - itemW/2 + R, g_bubble.cy - itemH/2}, // 2: 右
-            {g_bubble.cx - itemW/2, g_bubble.cy - itemH/2 + R}, // 3: 下
-            {g_bubble.cx - itemW/2 - R, g_bubble.cy - itemH/2}  // 4: 左
-        };
-
-        for (int i = 0; i < 5; i++) {
-            if (g_bubble.chars[i] == 0) continue;
-            BOOL sel = (i == g_bubble.selIdx);
-            
-            DWORD fillC = sel ? C_HOT : C_BUBBLE_ITEM;
-            DWORD borderC = sel ? C_WHITE : C_BUBBLE_BORDER;
-            DrawRoundRect(dc, pos[i].x, pos[i].y, itemW, itemH, fillC, borderC, 10);
-
-            wchar_t str[2] = {g_bubble.chars[i], 0};
-            DrawTextC(dc, pos[i].x, pos[i].y, itemW, itemH, str, g_f18b, C_WHITE);
-        }
+        const wchar_t* txt = KeyText(k);
+        HFONT f = g_f14b;
+        if (k->type == K_HIDE || k->type == K_ARROW) f = g_f14b;
+        if (k->vk == 0x08) f = g_f18b;
+        if (k->vk == 0x0D) f = g_f13b;
+        if (k->vk == 0x20 || k->type == K_SPACE) f = g_f14b;
+        DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, C_WHITE);
     }
 }
-
 static int HitKey(int x, int y) {
     for (int i = 0; i < g_nk; i++) {
         const KeyDef* k = &g_keys[i];
@@ -1131,9 +794,7 @@ static void ShowAboutDialog(HWND hWnd) {
         L"  -touchonly : \x89E6\x6478\x5C4F\x4E13\x5C5E\xFF0C\x975E\x89E6\x6478\x8BBE\x5907\x81EA\x52A8\x9000\x51FA\n"
         L"  -auto      : \x9ED8\x8BA4\x542F\x7528\x70B9\x51FB\x7F16\x8F91\x6846\x81EA\x52A8\x547C\x51FA\n"
         L"  -noauto    : \x9ED8\x8BA4\x5173\x95ED\x70B9\x51FB\x7F16\x8F91\x6846\x81EA\x52A8\x547C\x51FA\n"
-        L"  -short     : \x9ED8\x8BA4\x5F00\x542F\x77ED\x6309\x89E6\x53D1\x6A21\x5F0F\n"
-        L"  -9key / -t9: \x9ED8\x8BA4\x542F\x52A8\x4E5D\x5BAB\x683C\x89E6\x6478\x6A21\x5F0F\n"
-        L"  -full      : \x9ED8\x8BA4\x542F\x52A8\x5168\x952E\x76D8\x6A21\x5F0F\n"
+
         L"  -dark      : \x5F3A\x5236\x6DF1\x8272\x4E3B\x9898\n"
         L"  -light     : \x5F3A\x5236\x6D45\x8272\x4E3B\x9898\n"
         L"  -theme:system : \x8DDF\x968F\x7CFB\x7EDF\x4E3B\x9898\xFF08\x9ED8\x8BA4\xFF09\n\n"
@@ -1147,7 +808,7 @@ static void ShowMenu(HWND hWnd) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, ID_MENU_TOGGLE, g_vis ? L"\x9690\x85CF\x5C4F\x5E55\x952E\x76D8" : L"\x663E\x793A\x5C4F\x5E55\x952E\x76D8");
-    AppendMenuW(m, MF_STRING, ID_MENU_MODE, g_9key ? L"\x5207\x6362\x4E3A\x5168\x952E\x76D8" : L"\x5207\x6362\x4E3A\x4E5D\x5BAB\x683C");
+
     AppendMenuW(m, MF_STRING, ID_MENU_AUTO, g_af ? L"\x7981\x7528\x81EA\x52A8\x547C\x51FA" : L"\x542F\x7528\x81EA\x52A8\x547C\x51FA");
 
     // 主题切换子菜单
@@ -1168,8 +829,6 @@ static void ShowMenu(HWND hWnd) {
 
     if (id == ID_MENU_TOGGLE) {
         ToggleKB();
-    } else if (id == ID_MENU_MODE) {
-        SwitchMode();
     } else if (id == ID_MENU_AUTO) {
         g_af = !g_af;
         InvalidateRect(hWnd, 0, TRUE);
@@ -1234,9 +893,7 @@ static void OnLDown(HWND hWnd, int x, int y) {
     if (hh >= 0) {
         switch (hh) {
         case HDR_DOCK: ShowMenu(hWnd); break;
-        case HDR_IME: SwitchMode(); break;
         case HDR_AUTO: g_af = !g_af; InvalidateRect(hWnd, 0, TRUE); break;
-        case HDR_SHORT: g_shortPress = !g_shortPress; InvalidateRect(hWnd, 0, TRUE); break;
         case HDR_MIN: ShowKB(FALSE, FALSE); break;
         case HDR_CLOSE: PromptCloseAction(hWnd); break;
         }
@@ -1246,82 +903,35 @@ static void OnLDown(HWND hWnd, int x, int y) {
     int ki = HitKey(x, y);
     if (ki < 0) return;
     g_pk = ki;
-    g_bubble.active = FALSE;
     const KeyDef* k = &g_keys[ki];
+    DoKeyAction(k);
 
-    if (g_9key && k->type == K_9KEY) {
-        if (g_shortPress) {
-            TriggerLongPressBubble(ki);
-        } else {
-            SetTimer(hWnd, TIMER_LONGPRESS, 180, NULL);
-        }
-    } else {
-        DoKeyAction(k, TRUE);
-
-        if (k->vk == 0x08 || k->vk == 0x2E || k->vk == 0x20 || k->type == K_ARROW) {
-            g_repeatKeyIdx = ki;
-            SetTimer(hWnd, TIMER_REPEAT, 350, NULL);
-        }
+    if (k->vk == 0x08 || k->vk == 0x2E || k->vk == 0x20 || k->type == K_ARROW) {
+        g_repeatKeyIdx = ki;
+        SetTimer(hWnd, TIMER_REPEAT, 350, NULL);
     }
     InvalidateRect(hWnd, 0, TRUE);
 }
 
 static void OnLUp(HWND hWnd, int x, int y) {
-    KillTimer(hWnd, TIMER_LONGPRESS);
+    (void)x;
+    (void)y;
     KillTimer(hWnd, TIMER_REPEAT);
-
-    if (g_bubble.active) {
-        if (g_bubble.selIdx >= 0 && g_bubble.selIdx < 5) {
-            wchar_t ch = g_bubble.chars[g_bubble.selIdx];
-            // 修复 #4: 气泡选字也通过 VK 发送，经过 IME 管线
-            if (ch != 0) SendCharViaVK(ch);
-        }
-        g_bubble.active = FALSE;
-        g_pk = -1;
-        InvalidateRect(hWnd, 0, TRUE);
-        return;
-    }
+    g_repeatKeyIdx = -1;
 
     if (g_pk >= 0) {
-        int ki = g_pk;
         g_pk = -1;
-        const KeyDef* k = &g_keys[ki];
-        if (g_9key && k->type == K_9KEY) {
-            DoKeyAction(k, FALSE);
-        }
         InvalidateRect(hWnd, 0, TRUE);
     }
 }
 
 static void OnMMove(HWND hWnd, int x, int y) {
-    if (g_bubble.active) {
-        int dx = x - g_bubble.cx;
-        int dy = y - g_bubble.cy;
-        int distSq = dx * dx + dy * dy;
-        int newSel = 0;
-
-        if (distSq > 22 * 22) {
-            if (abs(dx) > abs(dy)) {
-                newSel = (dx > 0) ? 2 : 4;
-            } else {
-                newSel = (dy > 0) ? 3 : 1;
-            }
-        }
-
-        if (newSel != g_bubble.selIdx) {
-            g_bubble.selIdx = newSel;
-            InvalidateRect(hWnd, 0, TRUE);
-        }
-        return;
-    }
-
     int nk = HitKey(x, y);
     if (nk != g_hk) {
         g_hk = nk;
         InvalidateRect(hWnd, 0, TRUE);
     }
 }
-
 static BOOL IsTouchDevice() {
     int maxTouches = GetSystemMetrics(95);
     if (maxTouches > 0) return TRUE;
@@ -1338,7 +948,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
         RecreateFontsAndLayout();
         SetWindowLong(hWnd, GWL_EXSTYLE, GetWindowLong(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST);
         SetLayeredWindowAttributes(hWnd, 0, 255, LWA_ALPHA);
-        
+
         g_winHook = SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_SHOW, 0, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
         SetTimer(hWnd, TIMER_FOCUS, 200, 0);
         return 0;
@@ -1348,13 +958,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
     case WM_GETMINMAXINFO: {
         LPMINMAXINFO mmi = (LPMINMAXINFO)l;
         double dpiScale = GetSystemDpiScale();
-        if (g_9key) {
-            mmi->ptMinTrackSize.x = (int)(280 * dpiScale);
-            mmi->ptMinTrackSize.y = (int)(240 * dpiScale);
-        } else {
-            mmi->ptMinTrackSize.x = (int)(500 * dpiScale);
-            mmi->ptMinTrackSize.y = (int)(200 * dpiScale);
-        }
+        mmi->ptMinTrackSize.x = (int)(500 * dpiScale);
+        mmi->ptMinTrackSize.y = (int)(200 * dpiScale);
         return 0;
     }
     case WM_DPICHANGED: {
@@ -1383,11 +988,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
         HDC mem = CreateCompatibleDC(dc);
         HBITMAP bmp = CreateCompatibleBitmap(dc, g_ww, g_wh);
         HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        
+
         Fill(mem, 0, 0, g_ww, g_wh, C_BG);
         DrawHeader(mem);
         DrawKeys(mem);
-        
+
         BitBlt(dc, 0, 0, g_ww, g_wh, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
         EndPaint(hWnd, &ps);
@@ -1435,14 +1040,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_TIMER:
-        if (w == TIMER_LONGPRESS) {
-            KillTimer(hWnd, TIMER_LONGPRESS);
-            if (g_pk >= 0) TriggerLongPressBubble(g_pk);
-        } else if (w == TIMER_REPEAT) {
+        if (w == TIMER_REPEAT) {
             SetTimer(hWnd, TIMER_REPEAT, 40, NULL);
             if (g_pk >= 0 && g_pk == g_repeatKeyIdx) {
                 const KeyDef* k = &g_keys[g_pk];
-                DoKeyAction(k, TRUE);
+                DoKeyAction(k);
             } else {
                 KillTimer(hWnd, TIMER_REPEAT);
             }
@@ -1520,7 +1122,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
     case WM_DESTROY:
         KillTimer(hWnd, TIMER_FOCUS);
         KillTimer(hWnd, TIMER_SLIDE);
-        KillTimer(hWnd, TIMER_LONGPRESS);
         KillTimer(hWnd, TIMER_REPEAT);
         if (g_winHook) { UnhookWinEvent(g_winHook); g_winHook = 0; }
         DeleteObject(g_f12); DeleteObject(g_f13b); DeleteObject(g_f14);
@@ -1560,11 +1161,10 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
     BOOL fShow   = (strstr(cmd, "-show") != NULL);
     BOOL fHide   = (strstr(cmd, "-hide") != NULL || strstr(cmd, "-min") != NULL || strstr(cmd, "-tray") != NULL);
     BOOL tOnly   = (strstr(cmd, "-touchonly") != NULL);
-    BOOL f9Key   = (strstr(cmd, "-9key") != NULL || strstr(cmd, "-t9") != NULL);
-    BOOL fFull   = (strstr(cmd, "-full") != NULL || strstr(cmd, "-qwerty") != NULL);
+
     BOOL fAuto   = (strstr(cmd, "-auto") != NULL);
     BOOL fNoAuto = (strstr(cmd, "-noauto") != NULL);
-    BOOL fShort  = (strstr(cmd, "-short") != NULL);
+
     BOOL fDark   = (strstr(cmd, "-dark") != NULL);
     BOOL fLight  = (strstr(cmd, "-light") != NULL);
     BOOL fHelp   = (HasArg(cmd, "-h") || HasArg(cmd, "-help") || HasArg(cmd, "-?"));
@@ -1585,13 +1185,8 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
 
     if (tOnly && !isTouch) return 0;
 
-    if (f9Key) g_9key = TRUE;
-    if (fFull) g_9key = FALSE;
-
     if (fNoAuto) g_af = FALSE;
     else if (fAuto) g_af = TRUE;
-
-    if (fShort) g_shortPress = TRUE;
 
     g_mutex = CreateMutexW(0, FALSE, L"UI_TouchKeyboard_Mutex");
     if (g_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
