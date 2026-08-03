@@ -36,6 +36,11 @@ int g_keyHeight = 46;
 #define WM_DPICHANGED 0x02E0
 #endif
 
+// Desktop Imm.h does not declare this WM_IME_CONTROL query value.
+#ifndef IMC_GETCONVERSIONMODE
+#define IMC_GETCONVERSIONMODE 0x0001
+#endif
+
 #define ID_MENU_TOGGLE 10001
 #define ID_MENU_AUTO   10002
 #define ID_MENU_THEME  10004
