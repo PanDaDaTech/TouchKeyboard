@@ -639,8 +639,8 @@ static BOOL IsStartMenuOpen() {
     if (!s_comReady) return FALSE;
 
     if (!s_av) {
-        HRESULT hr = CoCreateInstance(&CLSID_AppVisibility, NULL, CLSCTX_INPROC_SERVER,
-                                      &IID_IAppVisibility, (void**)&s_av);
+        HRESULT hr = CoCreateInstance(CLSID_AppVisibility, NULL, CLSCTX_INPROC_SERVER,
+                                      IID_IAppVisibility, (void**)&s_av);
         if (FAILED(hr)) return FALSE;  // 无此 API 的系统（XP/WinPE）返回 FALSE，回退原行为
     }
 
