@@ -33,6 +33,10 @@ int g_keyHeight = 46;
 #define WM_DPICHANGED 0x02E0
 #endif
 
+#ifndef WM_DWMCOLORIZATIONCOLORCHANGED
+#define WM_DWMCOLORIZATIONCOLORCHANGED 0x0320
+#endif
+
 #define ID_MENU_TOGGLE 10001
 #define ID_MENU_AUTO   10002
 #define ID_MENU_THEME  10004
@@ -80,7 +84,10 @@ static const ThemeColors g_lightTheme = {
 
 // Theme mode: 0 = follow system, 1 = force dark, 2 = force light
 static int g_themeMode = 0;
-static const ThemeColors* g_theme = &g_darkTheme;
+// 是否启用“高亮按钮跟随系统壁纸强调色”（仅通过 -wallpaper 命令行参数开启，默认关闭）
+static BOOL g_wallpaperAccent = FALSE;
+static ThemeColors g_themeBuf;
+static const ThemeColors* g_theme = &g_themeBuf;
 
 static BOOL IsSystemDarkMode() {
     HKEY hKey;
@@ -94,13 +101,50 @@ static BOOL IsSystemDarkMode() {
     return (val == 0);
 }
 
+// 读取系统壁纸自动派生的强调色 (DWM AccentColor, ABGR) 并转为 GDI COLORREF (BGR)。
+// 读取失败或颜色无效时返回 0，由调用方回退到默认主题色。
+static DWORD GetWallpaperAccentBgr() {
+    HKEY hKey;
+    DWORD val = 0, sz = sizeof(val);
+    LONG ok = ERROR_SUCCESS;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\DWM",
+        0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        ok = RegQueryValueExW(hKey, L"AccentColor", NULL, NULL, (LPBYTE)&val, &sz);
+        RegCloseKey(hKey);
+    }
+    if (ok != ERROR_SUCCESS || ((val >> 24) & 0xFF) == 0) return 0;  // 缺失或 alpha 无效
+    // 注册表 ABGR (0xAABBGGRR) -> COLORREF BGR (0x00BBGGRR)
+    return ((val & 0xFF) << 16) | (val & 0x00FF00) | ((val >> 16) & 0xFF);
+}
+
 static void ApplyTheme() {
+    const ThemeColors* base;
     if (g_themeMode == 1) {
-        g_theme = &g_darkTheme;
+        base = &g_darkTheme;
     } else if (g_themeMode == 2) {
-        g_theme = &g_lightTheme;
+        base = &g_lightTheme;
     } else {
-        g_theme = IsSystemDarkMode() ? &g_darkTheme : &g_lightTheme;
+        base = IsSystemDarkMode() ? &g_darkTheme : &g_lightTheme;
+    }
+
+    g_themeBuf = *base;
+
+    // 可选：-wallpaper 开启后，高亮按钮颜色跟随系统壁纸自动提取的强调色
+    if (g_wallpaperAccent) {
+        DWORD accent = GetWallpaperAccentBgr();
+        if (accent != 0) g_themeBuf.hot = accent;
+    }
+
+    g_theme = &g_themeBuf;
+}
+
+// 重新应用主题；颜色确实发生变化时刷新窗口
+static void RefreshThemeAndRepaint(HWND hWnd) {
+    ThemeColors before = g_themeBuf;
+    ApplyTheme();
+    if (memcmp(&before, &g_themeBuf, sizeof(ThemeColors)) != 0) {
+        InvalidateRect(hWnd, 0, TRUE);
     }
 }
 
@@ -346,6 +390,14 @@ static void DrawTextC(HDC dc, int x, int y, int w, int h, const wchar_t* s, HFON
     DrawTextW(dc, s, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 }
 
+// 判断 BGR 颜色是否为浅色，用于在高亮按钮上自动选择深/浅色文字以保证可读性
+static BOOL IsLightColor(DWORD bgr) {
+    int r = bgr & 0xFF;
+    int g = (bgr >> 8) & 0xFF;
+    int b = (bgr >> 16) & 0xFF;
+    return (r * 299 + g * 587 + b * 114) / 1000 >= 150;
+}
+
 static wchar_t GetSymForKey(short vk, BOOL shifted) {
     struct { short vk; wchar_t n, s; } map[] = {
         {0x31,L'1',L'!'},{0x32,L'2',L'@'},{0x33,L'3',L'#'},{0x34,L'4',L'$'},{0x35,L'5',L'%'},
@@ -519,8 +571,27 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al, BOOL win) {
 }
 
 // 右 Shift 专用于输入法中英文切换；左 Shift 保留原有修饰键逻辑。
+// 采用“纯扫描码 + 按下/抬起分两次发送”：
+//  - KEYEVENTF_SCANCODE 直接注入物理扫描码，不受键盘布局映射影响，IME 能识别为真实右 Shift；
+//  - 按下与抬起之间留出间隔，避免过快 down+up 被微软拼音/搜狗等 IME 忽略。
 static void ToggleImeLang() {
-    SendKey(VK_RSHIFT, FALSE, FALSE, FALSE);
+    UINT sc = MapVirtualKeyW(VK_RSHIFT, MAPVK_VK_TO_VSC);
+    if (sc == 0) sc = 0x36;  // 右 Shift 标准扫描码
+
+    INPUT in = {};
+    in.type = INPUT_KEYBOARD;
+
+    // 按下右 Shift
+    in.ki.wScan = (WORD)sc;
+    in.ki.dwFlags = KEYEVENTF_SCANCODE;
+    SendInput(1, &in, sizeof(INPUT));
+
+    // 给 IME 足够时间处理按键事件
+    Sleep(50);
+
+    // 抬起右 Shift（IME 一般在抬起时完成中英文切换）
+    in.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+    SendInput(1, &in, sizeof(INPUT));
 }
 
 static void DoKeyAction(const KeyDef* k) {
@@ -665,8 +736,9 @@ static void DrawHeader(HDC dc) {
     }
 
     DWORD autoBg = g_af ? C_HOT : C_KEY;
+    DWORD autoText = IsLightColor(autoBg) ? 0x1A1A1A : C_WHITE;
     DrawRoundRect(dc, xAuto, btnY, wAuto, btnH, autoBg, C_KEY_BORDER, 12);
-    DrawTextC(dc, xAuto, btnY, wAuto, btnH, g_af ? L"\x81EA\x52A8\x547C\x51FA:\x5F00" : L"\x81EA\x52A8\x547C\x51FA:\x5173", g_f12, C_WHITE);
+    DrawTextC(dc, xAuto, btnY, wAuto, btnH, g_af ? L"\x81EA\x52A8\x547C\x51FA:\x5F00" : L"\x81EA\x52A8\x547C\x51FA:\x5173", g_f12, autoText);
 
     DrawTextC(dc, xMin, 0, wMin, g_headerH, L"\x229F", g_f14b, C_DIM);
     DrawTextC(dc, xClose, 0, wClose, g_headerH, L"\x2715", g_f12, C_DIM);
@@ -697,7 +769,8 @@ static void DrawKeys(HDC dc) {
         if (k->vk == 0x08) f = g_f18b;
         if (k->vk == 0x0D) f = g_f13b;
         if (k->vk == 0x20 || k->type == K_SPACE) f = g_f14b;
-        DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, C_WHITE);
+        DWORD textC = (active || pressed) && IsLightColor(bg) ? 0x1A1A1A : C_WHITE;
+        DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, textC);
     }
 }
 static int HitKey(int x, int y) {
@@ -807,7 +880,8 @@ static void ShowHelpDialog(HWND hWnd) {
         L"  -noauto    : \x9ED8\x8BA4\x5173\x95ED\x70B9\x51FB\x7F16\x8F91\x6846\x81EA\x52A8\x547C\x51FA\n"
         L"  -dark      : \x5F3A\x5236\x6DF1\x8272\x4E3B\x9898\n"
         L"  -light     : \x5F3A\x5236\x6D45\x8272\x4E3B\x9898\n"
-        L"  -theme:system : \x8DDF\x968F\x7CFB\x7EDF\x4E3B\x9898\xFF08\x9ED8\x8BA4\xFF09",
+        L"  -theme:system : \x8DDF\x968F\x7CFB\x7EDF\x4E3B\x9898\xFF08\x9ED8\x8BA4\xFF09\n"
+        L"  -wallpaper   : \x9AD8\x4EAE\x6309\x94AE\x989C\x8272\x8DDF\x968F\x7CFB\x7EDF\x58C1\x7EB8\x81EA\x52A8\x63D0\x53D6\x7684\x5F3A\x8C03\x8272\xFF08\x9ED8\x8BA4\x5173\x95ED\xFF09",
         L"\x547D\x4EE4\x884C\x53C2\x6570\x5E2E\x52A9",
         MB_OK | MB_ICONINFORMATION);
 }
@@ -1034,16 +1108,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_SETTINGCHANGE: {
-        // 跟随系统主题自动切换（仅 themeMode==0 时生效）
-        if (g_themeMode == 0 && l != 0) {
+        // 跟随系统主题自动切换（themeMode==0 或开启壁纸强调色时生效）
+        if ((g_themeMode == 0 || g_wallpaperAccent) && l != 0) {
             const wchar_t* section = (const wchar_t*)l;
             if (wcscmp(section, L"ImmersiveColorSet") == 0) {
-                const ThemeColors* oldTheme = g_theme;
-                ApplyTheme();
-                if (g_theme != oldTheme) {
-                    InvalidateRect(hWnd, 0, TRUE);
-                }
+                RefreshThemeAndRepaint(hWnd);
             }
+        }
+        return 0;
+    }
+    case WM_DWMCOLORIZATIONCOLORCHANGED: {
+        // 系统壁纸强调色变化时刷新高亮按钮颜色（仅 -wallpaper 开启时生效）
+        if (g_wallpaperAccent) {
+            RefreshThemeAndRepaint(hWnd);
         }
         return 0;
     }
@@ -1166,12 +1243,14 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
 
     BOOL fDark   = (strstr(cmd, "-dark") != NULL);
     BOOL fLight  = (strstr(cmd, "-light") != NULL);
+    BOOL fWall   = (strstr(cmd, "-wallpaper") != NULL);
     BOOL fHelp   = (HasArg(cmd, "-h") || HasArg(cmd, "-help") || HasArg(cmd, "-?"));
 
     // 主题参数解析
     if (fDark) g_themeMode = 1;
     else if (fLight) g_themeMode = 2;
     else g_themeMode = 0;  // 默认跟随系统
+    g_wallpaperAccent = fWall;  // 壁纸强调色默认关闭，仅 -wallpaper 开启
     ApplyTheme();
 
     // -h / -help / -?：仅显示命令行参数帮助，不打开主界面
