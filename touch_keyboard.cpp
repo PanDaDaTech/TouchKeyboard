@@ -129,7 +129,7 @@ static void PromptCloseAction(HWND hWnd);
 static void RecreateFontsAndLayout();
 static double GetSystemDpiScale();
 static void InitWindowSizeForDpi();
-static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al);
+static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al, BOOL win = FALSE);
 
 // Global state
 HINSTANCE   g_hInst = 0;
@@ -138,6 +138,7 @@ HICON       g_hTrayIcon = 0;
 BOOL        g_vis = FALSE;
 BOOL        g_manualShow = FALSE;
 BOOL        g_sh = FALSE, g_ct = FALSE, g_al = FALSE, g_cp = FALSE;
+BOOL        g_winKey = FALSE;
 BOOL        g_af = TRUE;
 DWORD       g_lht = 0;
 int         g_hk = -1, g_pk = -1;
@@ -419,6 +420,7 @@ static BOOL IsActive(const KeyDef* k) {
     if (k->vk == 0x14 && g_cp) return TRUE;
     if ((k->vk == VK_SHIFT || k->vk == VK_LSHIFT) && g_sh) return TRUE;
     if (k->vk == 0x11 && g_ct) return TRUE;
+    if (k->vk == VK_LWIN && g_winKey) return TRUE;
     if (k->vk == 0x12 && g_al) return TRUE;
     if (k->type == K_SPECIAL && k->vk == 0 && g_fnLayer) return TRUE;
     return FALSE;
@@ -427,8 +429,8 @@ static BOOL IsActive(const KeyDef* k) {
 // ========== IME-Compatible Input Injection ==========
 // 修复 #2: 使用 SendInput 替代已废弃的 keybd_event()
 // 修复 #5: 使用 MapVirtualKeyW (Unicode 版本) 并正确设置扫描码与扩展键标志
-static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
-    INPUT inputs[10] = {};
+static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al, BOOL win) {
+    INPUT inputs[12] = {};
     int count = 0;
 
     // 使用 MapVirtualKeyW 获取正确扫描码（修复 #5: 部分 IME 依赖正确扫描码）
@@ -462,6 +464,13 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
         inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC);
         count++;
     }
+    if (win) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_LWIN;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_LWIN, MAPVK_VK_TO_VSC);
+        inputs[count].ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+        count++;
+    }
 
     // 目标键 down + up（以 VK 形式发送，TSF/IME 可正确拦截 WM_KEYDOWN）
     inputs[count].type = INPUT_KEYBOARD;
@@ -477,6 +486,13 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
     count++;
 
     // 释放修饰键
+    if (win) {
+        inputs[count].type = INPUT_KEYBOARD;
+        inputs[count].ki.wVk = VK_LWIN;
+        inputs[count].ki.wScan = (WORD)MapVirtualKeyW(VK_LWIN, MAPVK_VK_TO_VSC);
+        inputs[count].ki.dwFlags = KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY;
+        count++;
+    }
     if (sh) {
         inputs[count].type = INPUT_KEYBOARD;
         inputs[count].ki.wVk = VK_SHIFT;
@@ -511,9 +527,9 @@ static void DoKeyAction(const KeyDef* k) {
     if (!k) return;
     switch (k->type) {
     case K_LETTER:
-        if (g_ct || g_al) {
-            SendKey(k->vk, g_sh, g_ct, g_al);
-            g_ct = FALSE; g_al = FALSE; g_sh = FALSE;
+        if (g_ct || g_al || g_winKey) {
+            SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
+            g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
         } else {
             BOOL us = g_sh ? !(GetKeyState(VK_CAPITAL) & 1) : FALSE;
             SendKey(k->vk, us, FALSE, FALSE);
@@ -524,14 +540,15 @@ static void DoKeyAction(const KeyDef* k) {
         if (g_fnLayer) {
             int fn = FnMap(k->vk);
             if (fn) {
-                SendKey((BYTE)(0x6F + fn), FALSE, FALSE, FALSE);  // VK_F1=0x70
+                SendKey((BYTE)(0x6F + fn), g_sh, g_ct, g_al, g_winKey);  // VK_F1=0x70
                 g_fnLayer = FALSE;
+                g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
                 InvalidateRect(g_hWnd, 0, TRUE);
                 break;
             }
         }
-        SendKey(k->vk, g_sh, g_ct, g_al);
-        g_sh = FALSE; g_ct = FALSE; g_al = FALSE;
+        SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
         break;
     case K_SPECIAL:
         if (k->vk == 0) {  // Fn 键：切换 F1~F12 功能层
@@ -540,8 +557,20 @@ static void DoKeyAction(const KeyDef* k) {
             InvalidateRect(g_hWnd, 0, TRUE);
             break;
         }
-        SendKey(k->vk, g_sh, g_ct, g_al);
-        if (k->vk != 0x14 && k->vk != 0x5B) { g_sh = FALSE; g_ct = FALSE; g_al = FALSE; }
+        if (k->vk == VK_LWIN) {
+            if (g_winKey) {
+                // Win 已锁定时再次点击，发送单独 Win 键以打开开始菜单。
+                SendKey(VK_LWIN, FALSE, FALSE, FALSE);
+                g_winKey = FALSE;
+            } else {
+                // 第一次点击只锁定并高亮，等待下一个快捷键。
+                g_winKey = TRUE;
+                g_fnLayer = FALSE;
+            }
+            break;
+        }
+        SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
         break;
     case K_MOD:
         if (k->vk == VK_RSHIFT) {
@@ -556,11 +585,18 @@ static void DoKeyAction(const KeyDef* k) {
         }
         break;
     case K_CAPS:
-        SendKey(0x14, FALSE, FALSE, FALSE);
+        SendKey(0x14, FALSE, FALSE, FALSE, g_winKey);
+        g_winKey = FALSE;
         g_cp = (GetKeyState(VK_CAPITAL) & 1) != 0;
         break;
-    case K_ARROW: SendKey(k->vk, FALSE, FALSE, FALSE); break;
-    case K_SPACE: SendKey(0x20, FALSE, g_ct, g_al); g_ct = FALSE; g_al = FALSE; break;
+    case K_ARROW:
+        SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+        break;
+    case K_SPACE:
+        SendKey(0x20, g_sh, g_ct, g_al, g_winKey);
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+        break;
     case K_HIDE: ShowKB(FALSE); break;
     default: break;
     }
