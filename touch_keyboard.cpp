@@ -513,31 +513,61 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
 }
 
 // ========== IME 中英文状态检测与切换 ==========
-// 通过 ImmGetConversionStatus 读取焦点控件的输入法转换模式
+// 优先查询焦点线程的默认 IME 窗口，失败时再读取焦点控件的输入上下文
+static BOOL QueryImeChinese(HWND target, BOOL* chinese) {
+    if (!target || !chinese) return FALSE;
+
+    // Modern IMEs may not expose their HIMC to another process. Query the
+    // target thread's default IME window first, which mirrors the taskbar state.
+    HWND imeWnd = ImmGetDefaultIMEWnd(target);
+    if (imeWnd) {
+        DWORD_PTR conversionMode = 0;
+        LRESULT conversionOk = SendMessageTimeoutW(imeWnd, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &conversionMode);
+        if (conversionOk) {
+            *chinese = (conversionMode & IME_CMODE_NATIVE) != 0;
+            return TRUE;
+        }
+    }
+
+    // Fallback for classic IMEs and same-process input controls.
+    HIMC himc = ImmGetContext(target);
+    if (!himc) return FALSE;
+    DWORD conversionMode = 0, sentenceMode = 0;
+    BOOL ok = ImmGetConversionStatus(himc, &conversionMode, &sentenceMode);
+    ImmReleaseContext(target, himc);
+    if (!ok) return FALSE;
+
+    *chinese = (conversionMode & IME_CMODE_NATIVE) != 0;
+    return TRUE;
+}
+
 static BOOL DetectImeChinese() {
     HWND fg = GetForegroundWindow();
     if (!fg || fg == g_hWnd) return g_langCN;
+
     DWORD tid = GetWindowThreadProcessId(fg, NULL);
     HWND target = fg;
-    GUITHREADINFO gi;
-    memset(&gi, 0, sizeof(gi));
-    gi.cbSize = sizeof(gi);
+    GUITHREADINFO gi = {sizeof(gi)};
     if (GetGUIThreadInfo(tid, &gi) && gi.hwndFocus) target = gi.hwndFocus;
-    HIMC himc = ImmGetContext(target);
-    if (!himc) return g_langCN;
-    DWORD conv = 0, sent = 0;
-    BOOL ok = ImmGetConversionStatus(himc, &conv, &sent);
-    ImmReleaseContext(target, himc);
-    if (!ok) return g_langCN;
-    return (conv & IME_CMODE_NATIVE) != 0;
+
+    BOOL chinese = FALSE;
+    return QueryImeChinese(target, &chinese) ? chinese : g_langCN;
+}
+
+static void RefreshImeState(HWND hWnd) {
+    BOOL chinese = DetectImeChinese();
+    if (chinese != g_langCN) {
+        g_langCN = chinese;
+        if (hWnd) InvalidateRect(hWnd, 0, TRUE);
+    }
 }
 
 // 切换中英文：发送右 Shift 脉冲（微软拼音/搜狗默认中英切换键）
 static void ToggleImeLang() {
     SendKey(VK_RSHIFT, FALSE, FALSE, FALSE);
     Sleep(60);
-    g_langCN = DetectImeChinese();
-    if (g_hWnd) InvalidateRect(g_hWnd, 0, TRUE);
+    RefreshImeState(g_hWnd);
 }
 
 static void DoKeyAction(const KeyDef* k) {
@@ -714,6 +744,7 @@ static void ShowKB(BOOL show, BOOL isManual) {
     int targetY = work.bottom - g_wh - 6;
 
     if (show) {
+        RefreshImeState(g_hWnd);
         if (isManual) g_manualShow = TRUE;
         if (g_vis) {
             SetWindowPos(g_hWnd, HWND_TOPMOST, sx, targetY, g_ww, g_wh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -786,21 +817,25 @@ static void ShowAboutDialog(HWND hWnd) {
     MessageBoxW(hWnd,
         L"Screen Keyboard \x5C4F\x5E55\x952E\x76D8\n"
         L"Powered By \x6C5F\x5357\x4E00\x6839\x8471 & PanDaTech\n\n"
-        L"\x89E6\x63A7\x4E0E\x9AD8\x6E05\x5C4F\x663E\x8F93\x5165\x5DE5\x5177\n\n"
+        L"\x89E6\x63A7\x4E0E\x9AD8\x6E05\x5C4F\x663E\x8F93\x5165\x5DE5\x5177",
+        L"\x5173\x4E8E",
+        MB_OK | MB_ICONINFORMATION);
+}
+
+static void ShowHelpDialog(HWND hWnd) {
+    MessageBoxW(hWnd,
         L"\x3010\x547D\x4EE4\x884C\x53C2\x6570\x8BF4\x660E (CLI Parameters)\x3011\n"
+        L"  -h / -help / -? : \x663E\x793A\x672C\x547D\x4EE4\x884C\x53C2\x6570\x5E2E\x52A9\n"
         L"  -show      : \x542F\x52A8\x65F6\x76F4\x63A5\x5F39\x51FA\x663E\x793A\x952E\x76D8\n"
         L"  -hide      : \x542F\x52A8\x65F6\x9759\x9ED8\x9690\x85CF\x5230\x7CFB\x7EDF\x6258\x76D8\n"
         L"  -min / -tray: \x6700\x5C0F\x5316\x9A7B\x7559\x6258\x76D8\n"
         L"  -touchonly : \x89E6\x6478\x5C4F\x4E13\x5C5E\xFF0C\x975E\x89E6\x6478\x8BBE\x5907\x81EA\x52A8\x9000\x51FA\n"
         L"  -auto      : \x9ED8\x8BA4\x542F\x7528\x70B9\x51FB\x7F16\x8F91\x6846\x81EA\x52A8\x547C\x51FA\n"
         L"  -noauto    : \x9ED8\x8BA4\x5173\x95ED\x70B9\x51FB\x7F16\x8F91\x6846\x81EA\x52A8\x547C\x51FA\n"
-
         L"  -dark      : \x5F3A\x5236\x6DF1\x8272\x4E3B\x9898\n"
         L"  -light     : \x5F3A\x5236\x6D45\x8272\x4E3B\x9898\n"
-        L"  -theme:system : \x8DDF\x968F\x7CFB\x7EDF\x4E3B\x9898\xFF08\x9ED8\x8BA4\xFF09\n\n"
-        L"\x3010 4K / \x9AD8 DPI \x9002\x914D\x3011\n"
-        L"  \x9876\x680F\x6309\x94AE\x4E0E\x952E\x76D8\x5168\x76D8\x652F\x6301 4K (200%~250% DPI) \x52A8\x6001\x63A8\x7B97\x77E2\x91CF\x5BF9\x9F50\xFF01",
-        L"\x5173\x4E8E\x4E0E\x53C2\x6570\x8BF4\x660E",
+        L"  -theme:system : \x8DDF\x968F\x7CFB\x7EDF\x4E3B\x9898\xFF08\x9ED8\x8BA4\xFF09",
+        L"\x547D\x4EE4\x884C\x53C2\x6570\x5E2E\x52A9",
         MB_OK | MB_ICONINFORMATION);
 }
 
@@ -819,7 +854,7 @@ static void ShowMenu(HWND hWnd) {
     AppendMenuW(m, MF_POPUP, (UINT_PTR)themeMenu, L"\x4E3B\x9898");
 
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING, ID_MENU_ABOUT, L"\x5173\x4E8E\x4E0E\x547D\x4EE4\x884C\x53C2\x6570\x8BF4\x660E");
+    AppendMenuW(m, MF_STRING, ID_MENU_ABOUT, L"\x5173\x4E8E");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, ID_MENU_EXIT, L"\x9000\x51FA\x952E\x76D8");
 
@@ -1066,13 +1101,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
             }
         } else if (w == TIMER_FOCUS) {
             // 周期性刷新中英文状态，保证语言键标签与实际输入法同步
-            if (g_vis) {
-                BOOL cn = DetectImeChinese();
-                if (cn != g_langCN) {
-                    g_langCN = cn;
-                    InvalidateRect(hWnd, 0, TRUE);
-                }
-            }
+            if (g_vis) RefreshImeState(hWnd);
 
             if (!g_af || GetTickCount() - g_lht < 1000) return 0;
 
@@ -1175,9 +1204,9 @@ int WINAPI WinMain(HINSTANCE hI, HINSTANCE, LPSTR cmd, int) {
     else g_themeMode = 0;  // 默认跟随系统
     ApplyTheme();
 
-    // -h / -help / -? ：仅弹出关于页，不打开主界面
+    // -h / -help / -?：仅显示命令行参数帮助，不打开主界面
     if (fHelp) {
-        ShowAboutDialog(NULL);
+        ShowHelpDialog(NULL);
         return 0;
     }
 
