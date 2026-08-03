@@ -594,6 +594,14 @@ static void ToggleImeLang() {
     SendInput(1, &in, sizeof(INPUT));
 }
 
+// 检测开始菜单/开始屏幕是否已打开（Win10/11: CoreWindow "Start"，Win8: ImmersiveLauncher）
+static BOOL IsStartMenuOpen() {
+    HWND h = FindWindowW(L"Windows.UI.Core.CoreWindow", L"Start");
+    if (h && IsWindowVisible(h)) return TRUE;
+    h = FindWindowW(L"ImmersiveLauncher", NULL);
+    return (h != NULL && IsWindowVisible(h));
+}
+
 static void DoKeyAction(const KeyDef* k) {
     if (!k) return;
     switch (k->type) {
@@ -633,6 +641,9 @@ static void DoKeyAction(const KeyDef* k) {
                 // Win 已锁定时再次点击，发送单独 Win 键以打开开始菜单。
                 SendKey(VK_LWIN, FALSE, FALSE, FALSE);
                 g_winKey = FALSE;
+            } else if (IsStartMenuOpen()) {
+                // 开始菜单已打开：再按一次 Win 键直接将其关闭（无需先重新锁定）。
+                SendKey(VK_LWIN, FALSE, FALSE, FALSE);
             } else {
                 // 第一次点击只锁定并高亮，等待下一个快捷键。
                 g_winKey = TRUE;
@@ -1150,6 +1161,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
                 }
             }
         } else if (w == TIMER_FOCUS) {
+            // Win 锁定/高亮状态与开始菜单状态同步：
+            // 开始菜单（无论由本键盘还是任务栏打开）一旦显示，即清除 Win 锁定，避免高亮残留。
+            if (g_winKey && IsStartMenuOpen()) {
+                g_winKey = FALSE;
+                InvalidateRect(hWnd, 0, TRUE);
+            }
+
             if (!g_af || GetTickCount() - g_lht < 1000) return 0;
 
             HWND fg = GetForegroundWindow();
