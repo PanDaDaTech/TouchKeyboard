@@ -6,12 +6,9 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <shellapi.h>
-#include <imm.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
-#pragma comment(lib, "Imm32.lib")
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -34,11 +31,6 @@ int g_keyHeight = 46;
 
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
-#endif
-
-// Desktop Imm.h does not declare this WM_IME_CONTROL query value.
-#ifndef IMC_GETCONVERSIONMODE
-#define IMC_GETCONVERSIONMODE 0x0001
 #endif
 
 #define ID_MENU_TOGGLE 10001
@@ -125,8 +117,7 @@ static void ApplyTheme() {
 
 enum KeyType {
     K_NORMAL, K_LETTER, K_MOD, K_CAPS,
-    K_SPECIAL, K_ARROW, K_SPACE, K_HIDE, K_DOCK, K_MIN, K_CLOSE,
-    K_LANG
+    K_SPECIAL, K_ARROW, K_SPACE, K_HIDE, K_DOCK, K_MIN, K_CLOSE
 };
 
 struct KeyDef { int x, y, w, h; short vk; KeyType type; };
@@ -160,9 +151,6 @@ HANDLE      g_mutex = 0;
 #define SLIDE_MS 12
 HFONT       g_f12 = 0, g_f13b = 0, g_f14 = 0, g_f14b = 0, g_f16b = 0, g_f18b = 0;
 NOTIFYICONDATAA g_nid;
-
-// IME 中英文状态：FALSE=英文(英), TRUE=中文(中)
-BOOL        g_langCN = FALSE;
 
 // Fn 功能键层：TRUE 时数字行显示为 F1~F12
 BOOL        g_fnLayer = FALSE;
@@ -279,22 +267,21 @@ static void BuildKeys() {
     }
     y += g_keyHeight + g_keyGap;
 
-    // Row 4: Fn, Ctrl, Win, Alt, 空格, Alt, Ctrl, 英/简体, ←, ↓, →  (11 keys)
+    // Row 4: Fn, Ctrl, Win, Alt, 空格, Alt, Ctrl, ←, ↓, →  (10 keys)
     {
         int wFn  = (int)(50 * dpiScale * scaleX);
         int wCtl = (int)(58 * dpiScale * scaleX);
         int wWin = (int)(50 * dpiScale * scaleX);
         int wAlt = (int)(58 * dpiScale * scaleX);
-        int wLang = (int)(68 * dpiScale * scaleX);
         int wArw = (int)(52 * dpiScale * scaleX);
-        int fixed = wFn + wCtl + wWin + wAlt + wAlt + wCtl + wLang + wArw * 3;
-        int spaceW = KEY_AREA_W - fixed - 10 * g_keyGap;
+        int fixed = wFn + wCtl + wWin + wAlt + wAlt + wCtl + wArw * 3;
+        int spaceW = KEY_AREA_W - fixed - 9 * g_keyGap;
         if (spaceW < 60) spaceW = 60;
-        int w[11] = {wFn, wCtl, wWin, wAlt, spaceW, wAlt, wCtl, wLang, wArw, wArw, wArw};
-        short v[11] = {0, 0x11, 0x5B, 0x12, 0x20, 0x12, 0x11, 0, 0x25, 0x28, 0x27};
-        KeyType t[11] = {K_SPECIAL, K_MOD, K_SPECIAL, K_MOD, K_SPACE, K_MOD, K_MOD, K_LANG, K_ARROW, K_ARROW, K_ARROW};
+        int w[10] = {wFn, wCtl, wWin, wAlt, spaceW, wAlt, wCtl, wArw, wArw, wArw};
+        short v[10] = {0, 0x11, 0x5B, 0x12, 0x20, 0x12, 0x11, 0x25, 0x28, 0x27};
+        KeyType t[10] = {K_SPECIAL, K_MOD, K_SPECIAL, K_MOD, K_SPACE, K_MOD, K_MOD, K_ARROW, K_ARROW, K_ARROW};
         int x = KEY_AREA_X;
-        for (int i = 0; i < 11; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
+        for (int i = 0; i < 10; i++) { AddKey(x, y, w[i], g_keyHeight, v[i], t[i]); x += w[i] + g_keyGap; }
     }
 }
 
@@ -421,7 +408,6 @@ static const wchar_t* KeyText(const KeyDef* k) {
         case 0x28: return L"\x2193";
         case 0xC0: return L"\x60";
     }
-    if (k->type == K_LANG) return g_langCN ? L"\x4E2D" : L"\x82F1";
 
     if (k->type == K_HIDE) return L"\x6536\x8D77";
     if (k->type == K_SPACE) return L"\x7A7A\x683C";
@@ -431,10 +417,9 @@ static const wchar_t* KeyText(const KeyDef* k) {
 
 static BOOL IsActive(const KeyDef* k) {
     if (k->vk == 0x14 && g_cp) return TRUE;
-    if ((k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) && g_sh) return TRUE;
+    if ((k->vk == VK_SHIFT || k->vk == VK_LSHIFT) && g_sh) return TRUE;
     if (k->vk == 0x11 && g_ct) return TRUE;
     if (k->vk == 0x12 && g_al) return TRUE;
-    if (k->type == K_LANG && g_langCN) return TRUE;
     if (k->type == K_SPECIAL && k->vk == 0 && g_fnLayer) return TRUE;
     return FALSE;
 }
@@ -449,8 +434,8 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
     // 使用 MapVirtualKeyW 获取正确扫描码（修复 #5: 部分 IME 依赖正确扫描码）
     UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
 
-    // 判断扩展键（右 Shift/Ctrl/Alt, 方向键, Win 等）
-    BOOL isExtended = (vk == VK_RSHIFT || vk == VK_RCONTROL || vk == VK_RMENU ||
+    // 判断扩展键（右 Ctrl/Alt、方向键、Win 等；右 Shift 不带 E0 扩展标志）
+    BOOL isExtended = (vk == VK_RCONTROL || vk == VK_RMENU ||
                        vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN ||
                        vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT ||
                        vk == VK_INSERT || vk == VK_DELETE || vk == VK_LWIN || vk == VK_RWIN);
@@ -517,62 +502,9 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al) {
     SendInput(count, inputs, sizeof(INPUT));
 }
 
-// ========== IME 中英文状态检测与切换 ==========
-// 优先查询焦点线程的默认 IME 窗口，失败时再读取焦点控件的输入上下文
-static BOOL QueryImeChinese(HWND target, BOOL* chinese) {
-    if (!target || !chinese) return FALSE;
-
-    // Modern IMEs may not expose their HIMC to another process. Query the
-    // target thread's default IME window first, which mirrors the taskbar state.
-    HWND imeWnd = ImmGetDefaultIMEWnd(target);
-    if (imeWnd) {
-        DWORD_PTR conversionMode = 0;
-        LRESULT conversionOk = SendMessageTimeoutW(imeWnd, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0,
-            SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &conversionMode);
-        if (conversionOk) {
-            *chinese = (conversionMode & IME_CMODE_NATIVE) != 0;
-            return TRUE;
-        }
-    }
-
-    // Fallback for classic IMEs and same-process input controls.
-    HIMC himc = ImmGetContext(target);
-    if (!himc) return FALSE;
-    DWORD conversionMode = 0, sentenceMode = 0;
-    BOOL ok = ImmGetConversionStatus(himc, &conversionMode, &sentenceMode);
-    ImmReleaseContext(target, himc);
-    if (!ok) return FALSE;
-
-    *chinese = (conversionMode & IME_CMODE_NATIVE) != 0;
-    return TRUE;
-}
-
-static BOOL DetectImeChinese() {
-    HWND fg = GetForegroundWindow();
-    if (!fg || fg == g_hWnd) return g_langCN;
-
-    DWORD tid = GetWindowThreadProcessId(fg, NULL);
-    HWND target = fg;
-    GUITHREADINFO gi = {sizeof(gi)};
-    if (GetGUIThreadInfo(tid, &gi) && gi.hwndFocus) target = gi.hwndFocus;
-
-    BOOL chinese = FALSE;
-    return QueryImeChinese(target, &chinese) ? chinese : g_langCN;
-}
-
-static void RefreshImeState(HWND hWnd) {
-    BOOL chinese = DetectImeChinese();
-    if (chinese != g_langCN) {
-        g_langCN = chinese;
-        if (hWnd) InvalidateRect(hWnd, 0, TRUE);
-    }
-}
-
-// 切换中英文：发送右 Shift 脉冲（微软拼音/搜狗默认中英切换键）
+// 右 Shift 专用于输入法中英文切换；左 Shift 保留原有修饰键逻辑。
 static void ToggleImeLang() {
     SendKey(VK_RSHIFT, FALSE, FALSE, FALSE);
-    Sleep(60);
-    RefreshImeState(g_hWnd);
 }
 
 static void DoKeyAction(const KeyDef* k) {
@@ -612,7 +544,9 @@ static void DoKeyAction(const KeyDef* k) {
         if (k->vk != 0x14 && k->vk != 0x5B) { g_sh = FALSE; g_ct = FALSE; g_al = FALSE; }
         break;
     case K_MOD:
-        if (k->vk == 0x10 || k->vk == 0xA0 || k->vk == 0xA1) {
+        if (k->vk == VK_RSHIFT) {
+            ToggleImeLang();
+        } else if (k->vk == VK_SHIFT || k->vk == VK_LSHIFT) {
             g_sh = !g_sh;
             if (g_sh) g_fnLayer = FALSE;
         } else if (k->vk == 0x11) {
@@ -627,7 +561,6 @@ static void DoKeyAction(const KeyDef* k) {
         break;
     case K_ARROW: SendKey(k->vk, FALSE, FALSE, FALSE); break;
     case K_SPACE: SendKey(0x20, FALSE, g_ct, g_al); g_ct = FALSE; g_al = FALSE; break;
-    case K_LANG: ToggleImeLang(); break;
     case K_HIDE: ShowKB(FALSE); break;
     default: break;
     }
@@ -749,7 +682,6 @@ static void ShowKB(BOOL show, BOOL isManual) {
     int targetY = work.bottom - g_wh - 6;
 
     if (show) {
-        RefreshImeState(g_hWnd);
         if (isManual) g_manualShow = TRUE;
         if (g_vis) {
             SetWindowPos(g_hWnd, HWND_TOPMOST, sx, targetY, g_ww, g_wh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -1105,9 +1037,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
                 }
             }
         } else if (w == TIMER_FOCUS) {
-            // 周期性刷新中英文状态，保证语言键标签与实际输入法同步
-            if (g_vis) RefreshImeState(hWnd);
-
             if (!g_af || GetTickCount() - g_lht < 1000) return 0;
 
             HWND fg = GetForegroundWindow();
