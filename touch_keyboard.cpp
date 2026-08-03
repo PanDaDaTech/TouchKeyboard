@@ -6,6 +6,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <objbase.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +14,8 @@
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
+#pragma comment(lib, "ole32.lib")
 
 int g_ww = 980, g_wh = 320;
 int g_headerH = 36;
@@ -183,6 +186,7 @@ BOOL        g_vis = FALSE;
 BOOL        g_manualShow = FALSE;
 BOOL        g_sh = FALSE, g_ct = FALSE, g_al = FALSE, g_cp = FALSE;
 BOOL        g_winKey = FALSE;
+DWORD       g_lastWinPressTick = 0;   // 最近一次发送裸 Win 键的时间（开始菜单开关切换用）
 BOOL        g_af = TRUE;
 DWORD       g_lht = 0;
 int         g_hk = -1, g_pk = -1;
@@ -594,12 +598,54 @@ static void ToggleImeLang() {
     SendInput(1, &in, sizeof(INPUT));
 }
 
-// 检测开始菜单/开始屏幕是否已打开（Win10/11: CoreWindow "Start"，Win8: ImmersiveLauncher）
+// ========== 开始菜单可见性检测（IAppVisibility，Win8+ 官方 API） ==========
+// Win10/11 的开始菜单是 UWP/XAML 窗口（Windows.UI.Core.CoreWindow），用 FindWindow/
+// IsWindowVisible 无法可靠检测（"Start" 窗口长期保持可见属性且不进入前台）。
+// 这里改用系统自身逻辑 IAppVisibility::IsLauncherVisible 判断开始菜单是否显示，
+// 与 Win8 及以上的系统实现保持一致。
+static const GUID CLSID_AppVisibility =
+    {0x7E5FE3D9, 0x985F, 0x4908, {0x91, 0xF9, 0xEE, 0x19, 0xF9, 0xFD, 0x15, 0x14}};
+static const GUID IID_IAppVisibility =
+    {0x2246EA2D, 0xCAEA, 0x4444, {0xA3, 0xC4, 0x6D, 0xE8, 0x27, 0xE4, 0x43, 0x13}};
+
+// IAppVisibility vtable（不依赖 shobjidl_core.h，手动声明）
+// [0] QueryInterface  [1] AddRef  [2] Release
+// [3] GetAppVisibilityOnMonitor  [4] IsLauncherVisible  [5] Advise  [6] Unadvise
+typedef struct AppVisibilityVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(void*);
+    ULONG   (STDMETHODCALLTYPE *Release)(void*);
+    HRESULT (STDMETHODCALLTYPE *GetAppVisibilityOnMonitor)(void*, HMONITOR, int*);
+    HRESULT (STDMETHODCALLTYPE *IsLauncherVisible)(void*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *Advise)(void*, void*, DWORD*);
+    HRESULT (STDMETHODCALLTYPE *Unadvise)(void*, DWORD);
+} AppVisibilityVtbl;
+
+typedef struct AppVisibility {
+    AppVisibilityVtbl* lpVtbl;
+} AppVisibility;
+
 static BOOL IsStartMenuOpen() {
-    HWND h = FindWindowW(L"Windows.UI.Core.CoreWindow", L"Start");
-    if (h && IsWindowVisible(h)) return TRUE;
-    h = FindWindowW(L"ImmersiveLauncher", NULL);
-    return (h != NULL && IsWindowVisible(h));
+    static AppVisibility* s_av = NULL;  // 缓存 COM 实例，避免每次重复创建
+    static BOOL s_comReady = FALSE;
+    static BOOL s_comTried = FALSE;
+
+    if (!s_comTried) {
+        s_comTried = TRUE;
+        // 主 UI 线程初始化 STA COM；S_FALSE 表示本线程已初始化，同样可用
+        HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        s_comReady = SUCCEEDED(hr);
+    }
+    if (!s_comReady) return FALSE;
+
+    if (!s_av) {
+        HRESULT hr = CoCreateInstance(&CLSID_AppVisibility, NULL, CLSCTX_INPROC_SERVER,
+                                      &IID_IAppVisibility, (void**)&s_av);
+        if (FAILED(hr)) return FALSE;  // 无此 API 的系统（XP/WinPE）返回 FALSE，回退原行为
+    }
+
+    BOOL vis = FALSE;
+    return (SUCCEEDED(s_av->lpVtbl->IsLauncherVisible(s_av, &vis)) && vis);
 }
 
 static void DoKeyAction(const KeyDef* k) {
@@ -640,10 +686,15 @@ static void DoKeyAction(const KeyDef* k) {
             if (g_winKey) {
                 // Win 已锁定时再次点击，发送单独 Win 键以打开开始菜单。
                 SendKey(VK_LWIN, FALSE, FALSE, FALSE);
+                g_lastWinPressTick = GetTickCount();
                 g_winKey = FALSE;
-            } else if (IsStartMenuOpen()) {
+            } else if (IsStartMenuOpen() ||
+                       (GetTickCount() - g_lastWinPressTick) < 600) {
                 // 开始菜单已打开：再按一次 Win 键直接将其关闭（无需先重新锁定）。
+                // 600ms 缓冲：刚发送过 Win 键、菜单尚在弹出动画时也直接切换，
+                // 避免检测稍有延迟导致需要按两次才能关闭。
                 SendKey(VK_LWIN, FALSE, FALSE, FALSE);
+                g_lastWinPressTick = GetTickCount();
             } else {
                 // 第一次点击只锁定并高亮，等待下一个快捷键。
                 g_winKey = TRUE;
