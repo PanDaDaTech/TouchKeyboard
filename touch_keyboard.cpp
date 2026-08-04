@@ -395,6 +395,28 @@ static void DrawTextC(HDC dc, int x, int y, int w, int h, const wchar_t* s, HFON
     DrawTextW(dc, s, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 }
 
+// 双符号键绘制：上=副符号（Shift 未触发时灰色，触发后白色），下=主字符（始终正常显示）
+static void DrawKeyDual(HDC dc, int x, int y, int w, int h,
+                        wchar_t baseCh, wchar_t shiftCh,
+                        HFONT fBase, HFONT fShift, DWORD baseC, DWORD shiftC) {
+    wchar_t buf[2] = {0, 0};
+
+    // 副符号（键上半部）
+    buf[0] = shiftCh;
+    RECT rt = {x, y, x + w, y + h / 2};
+    SelectObject(dc, fShift);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, shiftC);
+    DrawTextW(dc, buf, -1, &rt, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    // 主字符（键下半部）
+    buf[0] = baseCh;
+    RECT rb = {x, y + h / 2, x + w, y + h};
+    SelectObject(dc, fBase);
+    SetTextColor(dc, baseC);
+    DrawTextW(dc, buf, -1, &rb, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+}
+
 // 判断 BGR 颜色是否为浅色，用于在高亮按钮上自动选择深/浅色文字以保证可读性
 static BOOL IsLightColor(DWORD bgr) {
     int r = bgr & 0xFF;
@@ -408,7 +430,7 @@ static wchar_t GetSymForKey(short vk, BOOL shifted) {
         {0x31,L'1',L'!'},{0x32,L'2',L'@'},{0x33,L'3',L'#'},{0x34,L'4',L'$'},{0x35,L'5',L'%'},
         {0x36,L'6',L'^'},{0x37,L'7',L'&'},{0x38,L'8',L'*'},{0x39,L'9',L'('},{0x30,L'0',L')'},
         {0xBD,L'-',L'_'},{0xBB,L'=',L'+'},{0xDB,L'[',L'{'},{0xDD,L']',L'}'},{0xDC,L'\\',L'|'},
-        {0xBA,L';',L':'},{0xDE,L'\'',L'"'},{0xBC,L',',L'<'},{0xBE,L'.',L'>'},{0xBF,L'/',L'?'},
+        {0xBA,L';',L':'},{0xDE,L'\'',L'"'},{0xBC,L',',L'<'},{0xBE,L'.',L'>'},{0xBF,L'/',L'?'},{0xC0,L'`',L'~'},
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++)
         if (map[i].vk == vk) return shifted ? map[i].s : map[i].n;
@@ -855,7 +877,20 @@ static void DrawKeys(HDC dc) {
         if (k->vk == 0x0D) f = g_f13b;
         if (k->vk == 0x20 || k->type == K_SPACE) f = g_f14b;
         DWORD textC = (active || pressed) && IsLightColor(bg) ? 0x1A1A1A : C_WHITE;
-        DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, textC);
+
+        // 双符号键（数字行/标点）：同时显示主字符与副符号，
+        // 副符号在 Shift 未触发时灰色、触发后白色；Fn 层时仍显示 F1~F12。
+        wchar_t baseCh = 0, shiftCh = 0;
+        if (k->type == K_NORMAL && !g_fnLayer) {
+            baseCh = GetSymForKey(k->vk, FALSE);
+            shiftCh = GetSymForKey(k->vk, TRUE);
+        }
+        if (baseCh && shiftCh && shiftCh != baseCh) {
+            DWORD shiftC = g_sh ? textC : C_DIM;
+            DrawKeyDual(dc, k->x, k->y, k->w, k->h, baseCh, shiftCh, f, g_f12, textC, shiftC);
+        } else {
+            DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, textC);
+        }
     }
 }
 static int HitKey(int x, int y) {
