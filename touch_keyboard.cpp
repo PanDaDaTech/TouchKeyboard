@@ -186,8 +186,12 @@ BOOL        g_vis = FALSE;
 BOOL        g_manualShow = FALSE;
 BOOL        g_sh = FALSE, g_ct = FALSE, g_al = FALSE, g_cp = FALSE;
 BOOL        g_winKey = FALSE;
-int         g_winCount = 0;           // Win 键点击计数：0=空闲 1=已锁定(Win+快捷键) 2=开始菜单已打开
+int         g_winCount = 0;           // Win 键点击状态：0=空闲 1=锁定 2=开始菜单已打开 3=关闭后锁定（0→1→2→1→0）
 int         g_shiftCount = 0;         // 左右 Shift 共享点击计数：1=特殊符号 2=切换中/英
+HHOOK       g_kbHook = 0;             // 实体键盘低级钩子（监控 Win/Shift/Caps 状态同步显示）
+BOOL        g_physShift = FALSE;      // 实体 Shift 是否按住（仅显示同步，不影响虚拟键逻辑）
+BOOL        g_physWin = FALSE;        // 实体 Win 是否按住（仅显示同步）
+BOOL        g_physFn = FALSE;         // 预留接口：Fn 实体键状态（多数键盘不产生按键事件，后续按需扩展）
 BOOL        g_af = TRUE;
 DWORD       g_lht = 0;
 int         g_hk = -1, g_pk = -1;
@@ -450,7 +454,7 @@ static int FnMap(short vk) {
 
 static const wchar_t* LetterKeyText(short vk) {
     BOOL upper = g_cp;
-    if (g_sh) upper = !upper;
+    if (g_sh || g_physShift) upper = !upper;
     static wchar_t buf[2];
     buf[0] = (vk >= 0x41 && vk <= 0x5A) ? (upper ? vk : vk + 32) : vk;
     buf[1] = 0;
@@ -497,9 +501,9 @@ static const wchar_t* KeyText(const KeyDef* k) {
 
 static BOOL IsActive(const KeyDef* k) {
     if (k->vk == 0x14 && g_cp) return TRUE;
-    if ((k->vk == VK_SHIFT || k->vk == VK_LSHIFT || k->vk == VK_RSHIFT) && g_sh) return TRUE;
+    if ((k->vk == VK_SHIFT || k->vk == VK_LSHIFT || k->vk == VK_RSHIFT) && (g_sh || g_physShift)) return TRUE;
     if (k->vk == 0x11 && g_ct) return TRUE;
-    if (k->vk == VK_LWIN && g_winKey) return TRUE;
+    if (k->vk == VK_LWIN && (g_winKey || g_physWin)) return TRUE;
     if (k->vk == 0x12 && g_al) return TRUE;
     if (k->type == K_SPECIAL && k->vk == 0 && g_fnLayer) return TRUE;
     return FALSE;
@@ -712,10 +716,12 @@ static void DoKeyAction(const KeyDef* k) {
             break;
         }
         if (k->vk == VK_LWIN) {
-            // 记录 Win 键点击次数（0→1→2→0 循环），不依赖开始菜单检测：
-            //  第 1 次：锁定 Win（高亮），下一个键组成 Win+快捷键；
-            //  第 2 次：发送单独 Win 键显示开始菜单；
-            //  第 3 次：再发送一次 Win 键关闭开始菜单（恢复），计数清零。
+            // Win 键点击状态循环 0→1→2→1→0（同步原生 OSK 逻辑），不依赖开始菜单检测：
+            //  第 1 次：0→1 锁定并高亮，下一个键组成 Win+快捷键；
+            //  第 2 次：1→2 发送 Win 键打开开始菜单；
+            //  第 3 次：2→1 再发送 Win 键关闭开始菜单并回到锁定态；
+            //  第 4 次：1→0 解除锁定。
+            // 内部以 0/1/2/3 表示，其中 1 和 3 都显示为“锁定(1)”高亮状态。
             if (g_winCount == 0) {
                 g_winCount = 1;
                 g_winKey = TRUE;
@@ -724,10 +730,13 @@ static void DoKeyAction(const KeyDef* k) {
                 g_winCount = 2;
                 g_winKey = FALSE;
                 SendKey(VK_LWIN, FALSE, FALSE, FALSE);  // 打开开始菜单
+            } else if (g_winCount == 2) {
+                g_winCount = 3;
+                g_winKey = TRUE;                        // 关闭开始菜单后回到锁定态
+                SendKey(VK_LWIN, FALSE, FALSE, FALSE);  // 关闭开始菜单
             } else {
                 g_winCount = 0;
-                g_winKey = FALSE;
-                SendKey(VK_LWIN, FALSE, FALSE, FALSE);  // 关闭开始菜单（恢复）
+                g_winKey = FALSE;                       // 解除锁定
             }
             break;
         }
@@ -848,7 +857,22 @@ static void DrawHeader(HDC dc) {
         int barY = btnY + btnH / 2 - barH / 2;
         DrawRoundRect(dc, barX, barY, barW, barH, C_DIM, C_DIM, barH / 2);
     }
-    DrawTextC(dc, xClose, 0, wClose, g_headerH, L"\x2715", g_f12, C_DIM);
+    // 关闭图标：与最小化一样直接绘制（X），避免字体缺少字形时显示异常
+    {
+        int cx = xClose + wClose / 2;
+        int cy = g_headerH / 2;
+        int r  = (int)(7 * dpiScale * scaleX); if (r < 5) r = 5;
+        HPEN pen = CreatePen(PS_SOLID, 2, C_DIM);
+        HPEN op = (HPEN)SelectObject(dc, pen);
+        HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        MoveToEx(dc, cx - r, cy - r, NULL);
+        LineTo(dc, cx + r, cy + r);
+        MoveToEx(dc, cx + r, cy - r, NULL);
+        LineTo(dc, cx - r, cy + r);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(pen);
+    }
 }
 
 static void DrawKeys(HDC dc) {
@@ -886,7 +910,7 @@ static void DrawKeys(HDC dc) {
             shiftCh = GetSymForKey(k->vk, TRUE);
         }
         if (baseCh && shiftCh && shiftCh != baseCh) {
-            DWORD shiftC = g_sh ? textC : C_DIM;
+            DWORD shiftC = (g_sh || g_physShift) ? textC : C_DIM;
             DrawKeyDual(dc, k->x, k->y, k->w, k->h, baseCh, shiftCh, f, g_f12, textC, shiftC);
         } else {
             DrawTextC(dc, k->x, k->y, k->w, k->h, txt, f, textC);
@@ -1090,6 +1114,41 @@ static void CALLBACK WinEventProc(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LO
     }
 }
 
+// ===== 实体键盘状态监控（WH_KEYBOARD_LL） =====
+// 同步显示：实体 Win/Shift/Caps 键做到哪一步，程序显示就对应哪一步；
+// Fn 预留接口（多数键盘 Fn 不产生按键事件，后续按需扩展 g_physFn）。
+static LRESULT CALLBACK PhysKeyHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        const KBDLLHOOKSTRUCT* p = (const KBDLLHOOKSTRUCT*)lParam;
+        // 忽略本程序 SendInput 注入的事件，避免与虚拟键逻辑互相干扰
+        if (!(p->flags & LLKHF_INJECTED)) {
+            BOOL down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+            BOOL up   = (wParam == WM_KEYUP   || wParam == WM_SYSKEYUP);
+            if (down || up) {
+                BOOL changed = FALSE;
+                switch (p->vkCode) {
+                case VK_LSHIFT: case VK_RSHIFT:
+                    if (g_physShift != down) { g_physShift = down; changed = TRUE; }
+                    break;
+                case VK_LWIN: case VK_RWIN:
+                    if (g_physWin != down) { g_physWin = down; changed = TRUE; }
+                    break;
+                case VK_CAPITAL:
+                    if (down) { g_cp = !g_cp; changed = TRUE; }
+                    break;
+                // 预留接口：Fn 等其它实体键状态后续在此扩展（g_physFn）
+                default:
+                    break;
+                }
+                if (changed && g_hWnd && IsWindow(g_hWnd)) {
+                    InvalidateRect(g_hWnd, NULL, TRUE);
+                }
+            }
+        }
+    }
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
 static void OnLDown(HWND hWnd, int x, int y) {
     int hh = HitHeader(x, y);
     if (hh >= 0) {
@@ -1152,6 +1211,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
         SetLayeredWindowAttributes(hWnd, 0, 255, LWA_ALPHA);
 
         g_winHook = SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_SHOW, 0, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+        // 实体键盘状态监控：安装低级键盘钩子（只监控 Win/Shift/Caps，Fn 预留接口）
+        g_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, PhysKeyHookProc, g_hInst, 0);
+        g_cp = (GetKeyState(VK_CAPITAL) & 1) != 0;  // 启动时同步 CapsLock 状态
         SetTimer(hWnd, TIMER_FOCUS, 200, 0);
         return 0;
     }
@@ -1327,6 +1389,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
         KillTimer(hWnd, TIMER_SLIDE);
         KillTimer(hWnd, TIMER_REPEAT);
         if (g_winHook) { UnhookWinEvent(g_winHook); g_winHook = 0; }
+        if (g_kbHook) { UnhookWindowsHookEx(g_kbHook); g_kbHook = 0; }
         DeleteObject(g_f12); DeleteObject(g_f13b); DeleteObject(g_f14);
         DeleteObject(g_f14b); DeleteObject(g_f16b); DeleteObject(g_f18b);
         PostQuitMessage(0);
