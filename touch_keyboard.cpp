@@ -186,7 +186,8 @@ BOOL        g_vis = FALSE;
 BOOL        g_manualShow = FALSE;
 BOOL        g_sh = FALSE, g_ct = FALSE, g_al = FALSE, g_cp = FALSE;
 BOOL        g_winKey = FALSE;
-DWORD       g_lastWinPressTick = 0;   // 最近一次发送裸 Win 键的时间（开始菜单开关切换用）
+int         g_winCount = 0;           // Win 键点击计数：0=空闲 1=已锁定(Win+快捷键) 2=开始菜单已打开
+int         g_shiftCount = 0;         // 左右 Shift 共享点击计数：1=特殊符号 2=切换中/英
 BOOL        g_af = TRUE;
 DWORD       g_lht = 0;
 int         g_hk = -1, g_pk = -1;
@@ -474,7 +475,7 @@ static const wchar_t* KeyText(const KeyDef* k) {
 
 static BOOL IsActive(const KeyDef* k) {
     if (k->vk == 0x14 && g_cp) return TRUE;
-    if ((k->vk == VK_SHIFT || k->vk == VK_LSHIFT) && g_sh) return TRUE;
+    if ((k->vk == VK_SHIFT || k->vk == VK_LSHIFT || k->vk == VK_RSHIFT) && g_sh) return TRUE;
     if (k->vk == 0x11 && g_ct) return TRUE;
     if (k->vk == VK_LWIN && g_winKey) return TRUE;
     if (k->vk == 0x12 && g_al) return TRUE;
@@ -574,7 +575,7 @@ static void SendKey(BYTE vk, BOOL sh, BOOL ct, BOOL al, BOOL win) {
     SendInput(count, inputs, sizeof(INPUT));
 }
 
-// 右 Shift 专用于输入法中英文切换；左 Shift 保留原有修饰键逻辑。
+// 输入法中英文切换：由左右 Shift 的第 2 次点击触发（用右 Shift 扫描码，与真实右 Shift 一致）。
 // 采用“纯扫描码 + 按下/抬起分两次发送”：
 //  - KEYEVENTF_SCANCODE 直接注入物理扫描码，不受键盘布局映射影响，IME 能识别为真实右 Shift；
 //  - 按下与抬起之间留出间隔，避免过快 down+up 被微软拼音/搜狗等 IME 忽略。
@@ -596,6 +597,12 @@ static void ToggleImeLang() {
     // 抬起右 Shift（IME 一般在抬起时完成中英文切换）
     in.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
     SendInput(1, &in, sizeof(INPUT));
+}
+
+// 清除 Win 锁定：解锁并重置点击计数（使用 Win+快捷键或检测到开始菜单时调用）
+static void ClearWinLock() {
+    g_winKey = FALSE;
+    g_winCount = 0;
 }
 
 // ========== 开始菜单可见性检测（IAppVisibility，Win8+ 官方 API） ==========
@@ -654,7 +661,7 @@ static void DoKeyAction(const KeyDef* k) {
     case K_LETTER:
         if (g_ct || g_al || g_winKey) {
             SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
-            g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+            g_sh = FALSE; g_ct = FALSE; g_al = FALSE; ClearWinLock();
         } else {
             BOOL us = g_sh ? !(GetKeyState(VK_CAPITAL) & 1) : FALSE;
             SendKey(k->vk, us, FALSE, FALSE);
@@ -667,13 +674,13 @@ static void DoKeyAction(const KeyDef* k) {
             if (fn) {
                 SendKey((BYTE)(0x6F + fn), g_sh, g_ct, g_al, g_winKey);  // VK_F1=0x70
                 g_fnLayer = FALSE;
-                g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+                g_sh = FALSE; g_ct = FALSE; g_al = FALSE; ClearWinLock();
                 InvalidateRect(g_hWnd, 0, TRUE);
                 break;
             }
         }
         SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
-        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; ClearWinLock();
         break;
     case K_SPECIAL:
         if (k->vk == 0) {  // Fn 键：切换 F1~F12 功能层
@@ -683,34 +690,43 @@ static void DoKeyAction(const KeyDef* k) {
             break;
         }
         if (k->vk == VK_LWIN) {
-            if (g_winKey) {
-                // Win 已锁定时再次点击，发送单独 Win 键以打开开始菜单。
-                SendKey(VK_LWIN, FALSE, FALSE, FALSE);
-                g_lastWinPressTick = GetTickCount();
-                g_winKey = FALSE;
-            } else if (IsStartMenuOpen() ||
-                       (GetTickCount() - g_lastWinPressTick) < 600) {
-                // 开始菜单已打开：再按一次 Win 键直接将其关闭（无需先重新锁定）。
-                // 600ms 缓冲：刚发送过 Win 键、菜单尚在弹出动画时也直接切换，
-                // 避免检测稍有延迟导致需要按两次才能关闭。
-                SendKey(VK_LWIN, FALSE, FALSE, FALSE);
-                g_lastWinPressTick = GetTickCount();
-            } else {
-                // 第一次点击只锁定并高亮，等待下一个快捷键。
+            // 记录 Win 键点击次数（0→1→2→0 循环），不依赖开始菜单检测：
+            //  第 1 次：锁定 Win（高亮），下一个键组成 Win+快捷键；
+            //  第 2 次：发送单独 Win 键显示开始菜单；
+            //  第 3 次：再发送一次 Win 键关闭开始菜单（恢复），计数清零。
+            if (g_winCount == 0) {
+                g_winCount = 1;
                 g_winKey = TRUE;
                 g_fnLayer = FALSE;
+            } else if (g_winCount == 1) {
+                g_winCount = 2;
+                g_winKey = FALSE;
+                SendKey(VK_LWIN, FALSE, FALSE, FALSE);  // 打开开始菜单
+            } else {
+                g_winCount = 0;
+                g_winKey = FALSE;
+                SendKey(VK_LWIN, FALSE, FALSE, FALSE);  // 关闭开始菜单（恢复）
             }
             break;
         }
         SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
-        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; ClearWinLock();
         break;
     case K_MOD:
-        if (k->vk == VK_RSHIFT) {
-            ToggleImeLang();
-        } else if (k->vk == VK_SHIFT || k->vk == VK_LSHIFT) {
-            g_sh = !g_sh;
-            if (g_sh) g_fnLayer = FALSE;
+        if (k->vk == VK_RSHIFT || k->vk == VK_SHIFT || k->vk == VK_LSHIFT) {
+            // 左右 Shift 共享点击计数，行为同步：
+            //  第 1 次：与左 Shift 原行为一致，锁定特殊符号；
+            //  第 2 次：切换中/英输入法，并退出特殊符号锁定，计数清零。
+            g_shiftCount++;
+            if (g_shiftCount >= 2) {
+                g_shiftCount = 0;
+                g_sh = FALSE;
+                g_fnLayer = FALSE;
+                ToggleImeLang();
+            } else {
+                g_sh = TRUE;
+                g_fnLayer = FALSE;
+            }
         } else if (k->vk == 0x11) {
             g_ct = !g_ct;
         } else if (k->vk == 0x12) {
@@ -719,16 +735,16 @@ static void DoKeyAction(const KeyDef* k) {
         break;
     case K_CAPS:
         SendKey(0x14, FALSE, FALSE, FALSE, g_winKey);
-        g_winKey = FALSE;
+        ClearWinLock();
         g_cp = (GetKeyState(VK_CAPITAL) & 1) != 0;
         break;
     case K_ARROW:
         SendKey(k->vk, g_sh, g_ct, g_al, g_winKey);
-        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; ClearWinLock();
         break;
     case K_SPACE:
         SendKey(0x20, g_sh, g_ct, g_al, g_winKey);
-        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; g_winKey = FALSE;
+        g_sh = FALSE; g_ct = FALSE; g_al = FALSE; ClearWinLock();
         break;
     case K_HIDE: ShowKB(FALSE); break;
     default: break;
@@ -802,7 +818,14 @@ static void DrawHeader(HDC dc) {
     DrawRoundRect(dc, xAuto, btnY, wAuto, btnH, autoBg, C_KEY_BORDER, 12);
     DrawTextC(dc, xAuto, btnY, wAuto, btnH, g_af ? L"\x81EA\x52A8\x547C\x51FA:\x5F00" : L"\x81EA\x52A8\x547C\x51FA:\x5173", g_f12, autoText);
 
-    DrawTextC(dc, xMin, 0, wMin, g_headerH, L"\x229F", g_f14b, C_DIM);
+    // 最小化图标：直接绘制居中小横条（避免字体缺少 U+229F 字形时显示为 "-"）
+    {
+        int barW = (int)(14 * dpiScale * scaleX);
+        int barH = (int)(2 * dpiScale * scaleY); if (barH < 2) barH = 2;
+        int barX = xMin + (wMin - barW) / 2;
+        int barY = btnY + btnH / 2 - barH / 2;
+        DrawRoundRect(dc, barX, barY, barW, barH, C_DIM, C_DIM, barH / 2);
+    }
     DrawTextC(dc, xClose, 0, wClose, g_headerH, L"\x2715", g_f12, C_DIM);
 }
 
@@ -1215,7 +1238,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM w, LPARAM l) {
             // Win 锁定/高亮状态与开始菜单状态同步：
             // 开始菜单（无论由本键盘还是任务栏打开）一旦显示，即清除 Win 锁定，避免高亮残留。
             if (g_winKey && IsStartMenuOpen()) {
-                g_winKey = FALSE;
+                ClearWinLock();
                 InvalidateRect(hWnd, 0, TRUE);
             }
 
